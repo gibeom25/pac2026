@@ -67,10 +67,18 @@ action trajectory (EEF-delta 시퀀스)
 
 ## 3. 서브모듈 구성
 
-### 3.1 Vision/Seam-Groove 인식 — 🔶권장, 확인 필요
-- **제안**: BC/RL과 분리된 경량 고전 CV 모듈로 구성 (색상·대비 threshold + skeletonization, 또는 경량 세그멘테이션 네트워크). 펜/프린트 선은 고전 CV로 안정적으로 검출 가능한 대상이므로, 이를 별도 모듈로 빼면 BC/RL은 "경로를 어떻게 따라갈지(속도·부드러움)"만 학습하면 되어 데이터 효율이 크게 향상됨.
-- **출력**: 정제된 경로 좌표 시퀀스 (월드 또는 EEF 기준), BC/RL 입력으로 사용.
-- **상태**: 아직 사용자 확정 안 됨 — 채택 여부 결정 필요.
+### 3.1 Vision/Seam-Groove 인식 — ✅확정: 고전 CV 모듈
+BC/RL과 분리된 경량 고전 CV 모듈로 구성한다. 펜/프린트 선은 고전 CV로 안정적으로 검출 가능한 대상이므로, 이를 별도 모듈로 빼서 BC/RL은 "경로를 어떻게 따라갈지(속도·부드러움)"만 학습하면 되도록 데이터 효율을 높인다.
+
+**파이프라인 (권장 세부안)**:
+1. 색상/대비 기반 이진화 (HSV threshold 또는 adaptive threshold) → 형태학적 노이즈 제거 (opening/closing)
+2. Skeletonization으로 1px 중심선 추출 (`skimage.morphology.skeletonize` 또는 `cv2.ximgproc.thinning`)
+3. 중심선을 순서 있는 polyline으로 정렬 (끝점에서 시작해 인접 픽셀을 따라가는 그래프 순회)
+4. 끊김(gap) 처리: 스켈레톤 끝점 간 거리가 임계값 이내면 직선으로 연결 (원본 요구사항 "끊김 빈도" 학습 대상과는 별개로, 인식 단계의 끊김은 여기서 보강)
+5. Depth(RGBD)로 픽셀 → 카메라 좌표 → world/EEF 좌표 변환
+6. 로컬 특징 추출: 각 경로 지점에서 곡률(주변 점들로 추정), 선 굵기(거리변환 기반) 산출
+
+**출력** (BC/RL 입력으로 사용): 정제된 경로 좌표 polyline(world/EEF 기준) + 지점별 (곡률, 선 굵기) 특징. 이는 팀 프레임워크 다이어그램의 "Seam/Groove 인식 → EEF 기준 현재/목표 위치 상대오차 계산" 단계에 정확히 대응.
 
 ### 3.2 학습 데이터 파이프라인 — ✅확정
 - SOArm-leader 티칭 → EEF-delta 궤적 기록 (로봇 종속성 배제).
@@ -78,19 +86,35 @@ action trajectory (EEF-delta 시퀀스)
 - 🔶 권장: 아래 4개 축을 명시적 체크리스트로 두고 수집 커버리지 관리
   - 궤적 길이 / 경로 형태(직선·곡선·지그재그) / 끊김 빈도 / 선 굵기별 속도 매핑
 
-### 3.3 BC (Behavior Cloning) — 구조 ✅ / 세부 🔶
-- 입력: 이미지 (+ 3.1이 채택되면 정제된 경로좌표).
-- 구조: Transformer 기반 검토 중 (작업 맥락 이해 목적). ❓ 최종 미확정.
-  - 🔶 권장: ACT(Action Chunking Transformer) 계열 참고. 액션을 chunk 단위로 출력하면 4장의 "시퀀스 단위 재동기화" 지연보정과 구조적으로 자연스럽게 맞물림.
-- 역할: 학습 단계 teacher 전용, 배포 파이프라인에는 포함되지 않음 (1.2절).
+### 3.3 BC (Behavior Cloning) — ✅확정: ACT 계열 Transformer, action chunking
+- **입력**: 이미지 임베딩(경량 CNN backbone, 예: ResNet18) + 3.1 CV 모듈의 경로 특징(로컬 목표점, 곡률, 선 굵기) + 현재 proprioception(EEF 상태) + 최근 액션 히스토리(작업 맥락 반영).
+- **구조**: ACT(Action Chunking Transformer) 계열.
+  - Transformer 인코더: 위 입력 시퀀스(짧은 history window)를 인코딩.
+  - Transformer 디코더: 학습된 K개의 위치 쿼리(queries)로 향후 K-step action chunk를 한 번에 디코딩 (DETR 스타일).
+  - **Chunk 길이 K**: AI 출력 스텝 간격 `dt_AI = 20ms` 기준 **K=32** (= 640ms 분량) 권장 — 근거는 4.4절 지연보정 파라미터와 연동.
+  - CVAE 잠재변수(원조 ACT의 스타일 다양성 모델링)는 **1차 버전에서는 제외**(단순 결정적 chunk 예측). 데모 스타일 편차(선 굵기별 속도 등)가 학습을 흐리게 하면 2차 버전에서 추가 검토.
+- **역할**: 학습 단계 teacher 전용. 배포 파이프라인에는 포함되지 않음 (1.2절) — RL 학습 중 보상 계산에만 사용되고, 배포된 RL 단일망은 BC를 런타임에 호출하지 않음.
 
-### 3.4 RL (강화학습) — teacher 구조 ✅ / 보상 세부 🔶
-- 구조: Conv + MLP, 이미지와 BC teacher 궤적을 함께 입력받아 학습.
-- 보상 설계 초안 (❓ 확정 필요):
-  - `R = R_imitation(BC 경로와의 거리) + R_task(선 중심 유지, 곡률-속도 매핑 적절성, 부드러움)`
-  - 🔶 권장: 학습 초반 `R_imitation` 가중치를 높게, 진행될수록 감소시키는 trust-region/KL 완화 스케줄링. (가중치 고정 시 RL이 BC를 그대로 복제하고 끝나거나, 반대로 과도하게 이탈해 위험 궤적을 만들 위험 있음)
-  - RL 알고리즘(PPO/SAC 등) ❓ 미정.
-- 배포: ✅ 학습 완료 후 RL 네트워크만 고정(frozen)하여 단일망으로 추론 (1.2절).
+### 3.4 RL (강화학습) — ✅확정: SAC, Residual-style reward shaping
+- **알고리즘**: SAC (Soft Actor-Critic). 연속 액션(6DOF EEF-delta)에 적합, off-policy라 시뮬레이션 샘플 재사용 효율이 좋음.
+  - 정책망: Conv(이미지) + MLP(3.1 경로 특징 + proprioception + BC chunk 참조값) → 6DOF 델타의 평균/표준편차(tanh-squashed Gaussian).
+  - 그리퍼/펌프 신호(0/1)는 SAC의 연속 액션에 로짓으로 포함 후 추론 시 임계값으로 이진화 (별도 정책 헤드 분리는 1차 버전에서 불필요 — 데이터로 충분히 학습 가능한 단순 신호).
+  - 비평망: Twin Q-network (Conv+MLP), target network soft update (τ≈0.005), 자동 엔트로피 온도 튜닝.
+  - 감가율 γ ≈ 0.95~0.98 권장 (용접 한 구간 단위의 비교적 짧은 호라이즌 태스크이므로 표준 0.99보다 약간 낮게).
+- **보상 함수 (세부 설계)**:
+
+  `R_t = w1·R_imitation + w2·R_track + w3·R_smooth`
+
+  | 항 | 정의 | 의도 |
+  |---|---|---|
+  | `R_imitation` | `-‖a_RL − a_BC‖²` (같은 시점 BC 예측 델타와의 L2 거리) | "따라가는거" — BC 경로를 teacher로 추종 |
+  | `R_track` | `-\|d_perp\|` (3.1 CV 경로 중심선까지 수직거리) `+ progress_t − λ·\|Δprogress_t − Δprogress_{t-1}\|` | "선을 일정하게 잘 따라가는지" — 중심선 유지 + 진행속도의 일관성(급가속/급감속 페널티) |
+  | `R_smooth` | `-‖a_t − a_{t-1}‖²` | 실제 로봇 동작 부드러움 (펌프 도포 품질과 직결) |
+
+  - **속도-곡률 적응**: `R_track`의 progress 목표값은 상수가 아니라 3.1에서 얻은 로컬 곡률·선 굵기의 함수 `target_speed = f(curvature, thickness)`로 설정 (곡률 클수록/선 얇을수록 감속) — 원 요구사항 "선 굵기에 따른 속도 조절" 반영.
+  - **가중치 스케줄링**: 학습 초반 `w1`(모방)을 높게(예: 1.0), `w2·w3`(과제 최적화)를 낮게 시작 → 학습 진행에 따라 `w1`을 floor(예: 0.3)까지 선형 감소, `w2·w3`는 상대적으로 증가. BC를 그대로 복제하고 끝나거나 반대로 위험하게 이탈하는 두 극단을 모두 방지.
+  - **초기 가중치 권장값** (실측 후 튜닝 필요): `w1=1.0→0.3`, `w2=0.3→1.0`, `w3=0.2`(고정), `λ=0.5`.
+- **배포**: ✅ 학습 완료 후 RL 네트워크만 고정(frozen)하여 단일망으로 추론 (1.2절). BC는 학습 중 보상 계산(`R_imitation`)에만 관여하며, 배포된 RL 네트워크의 입력에는 BC 출력이 필요 없음 — RL이 학습 과정에서 BC의 행동을 이미 내재화했기 때문.
 
 ---
 
@@ -121,11 +145,19 @@ def compensate_latency(new_trajectory, current_eef_state, last_progress_idx,
     return spliced, best_j
 ```
 
-`state_distance`는 위치 오차와 방향/속도 오차의 가중합으로 정의 (가중치 ❓ 미정, 실측 데이터로 튜닝 필요).
+### 4.4 파라미터 권장값 — 🔶초기 추천(실측 후 튜닝)
 
-### 4.4 미확정 파라미터 — ❓
-- 윈도우 크기 `W`, 블렌딩 시간 `blend_ms` — 실측 t_infer 분산 확보 후 결정.
-- `state_distance`의 위치/속도 가중치.
+실측 데이터가 없는 상태의 초기값이며, t_infer 분포 측정 후 재조정할 것.
+
+| 파라미터 | 권장 초기값 | 근거 |
+|---|---|---|
+| AI 시퀀스 스텝 간격 `dt_AI` | 20ms (50Hz) | 1kHz 제어주기 대비 50배 업샘플링 여유 확보하면서 AI 연산 부담은 과도하지 않은 절충점. 3.3의 BC chunk 길이 K와 연동. |
+| Chunk 길이 `K` (BC/RL 출력 길이) | 32 스텝 (≈640ms) | 예상 t_infer(작은 Conv+MLP 기준 수십~200ms대 추정)의 2~3배 여유. 큐가 바닥나는 것을 방지. |
+| 재동기화 윈도우 `W` | ±5 스텝 (±100ms) | coarse anchor(`j0`, 실측 t_infer 기반) 오차가 이 범위를 크게 벗어나지 않는다고 가정. 좁게 유지해 자기교차 구간 모호성과 탐색 비용을 최소화. |
+| 블렌딩 시간 `blend_ms` | 50~100ms | 1kHz 기준 50~100틱. 전형적 용접 이동속도에서 수 mm급 위치 잔차를 흡수하기에 충분하면서, 데모 상 체감 지연은 최소화. |
+| `state_distance` 가중치 | `w_pos=1.0`(m), `w_rot=0.1`(rad), `w_vel=0.5`(방향 코사인 유사도 기반) | 위치 정합을 우선하되 자기교차 구간에서는 방향 벡터로 tie-break. 순수 초기 추정치. |
+
+이 표의 모든 값은 **1차 구현의 출발점**이며, 실제 배포 RL 네트워크의 t_infer 실측 분포와 초기 시연 결과를 확보한 뒤 재조정한다.
 
 ---
 
@@ -148,12 +180,17 @@ def compensate_latency(new_trajectory, current_eef_state, last_progress_idx,
 
 ---
 
-## 7. 미해결 항목 (Open Items) 정리
+## 7. 설계 확정 현황 (2026-09-19 갱신)
 
-1. ❓ Seam/Groove 인식을 별도 고전 CV 모듈로 분리할지 여부 (3.1)
-2. ❓ BC 아키텍처: Transformer 세부 구조, ACT류 chunking 채택 여부 (3.3)
-3. ❓ RL 보상함수 세부 가중치 및 스케줄링 방식 (3.4)
-4. ❓ RL 알고리즘 선택 (PPO/SAC/기타) (3.4)
-5. ❓ 지연보정 윈도우 `W`, 블렌딩 시간 `blend_ms`, `state_distance` 가중치 (4.4)
+1. ✅ Seam/Groove 인식 → 고전 CV 모듈로 분리 확정 (3.1)
+2. ✅ BC 아키텍처 → ACT 계열 Transformer, action chunking(K=32) 채택 확정 (3.3)
+3. ✅ RL 보상함수 → `R_imitation + R_track + R_smooth` 3항 구조 + 가중치 스케줄링 확정 (3.4)
+4. ✅ RL 알고리즘 → SAC 확정 (3.4)
+5. 🔶 지연보정 파라미터(`dt_AI`, `K`, `W`, `blend_ms`, `state_distance` 가중치) → 초기 추천값 확정, 실측 후 튜닝 예정 (4.4)
+
+**남은 실질적 미해결 항목**:
+- `R_track`의 `target_speed = f(curvature, thickness)` 구체 함수형 — 데모 데이터 통계 확보 후 회귀/룩업테이블로 결정.
+- 4.4절 파라미터들의 실측 기반 재조정 — RL 배포망 t_infer 분포 측정 후.
+- CV 모듈의 gap-bridging 최대 거리 임계값 — 실제 용접선 샘플로 튜닝.
 
 이 항목들은 실측 데이터(t_infer 분산, 초기 BC/RL 학습 결과)가 나오는 대로 확정하고 이 문서를 갱신할 것.
