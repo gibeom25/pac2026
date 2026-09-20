@@ -192,5 +192,24 @@ def compensate_latency(new_trajectory, current_eef_state, last_progress_idx,
 - `R_track`의 `target_speed = f(curvature, thickness)` 구체 함수형 — 데모 데이터 통계 확보 후 회귀/룩업테이블로 결정.
 - 4.4절 파라미터들의 실측 기반 재조정 — RL 배포망 t_infer 분포 측정 후.
 - CV 모듈의 gap-bridging 최대 거리 임계값 — 실제 용접선 샘플로 튜닝.
+- RL 환경(`ai_layer/envs/so101_seam_env.py`)의 목표 경로는 현재 절차적 직선(ground truth)이며,
+  실제 카메라+seam_cv 인식을 RL 루프에 넣는 것은 후속 작업.
+
+## 8. 구현 현황 (2026-09-20)
+
+`ai_layer/` 폴더에 BC(ACT)·RL(SAC) 프레임워크 코드를 구현했다 (상세는 `ai_layer/README.md`).
+BC/RL 정책 자체는 lerobot(0.4.4)의 기존 `ACTPolicy`/`SACPolicy` 구현을 그대로 사용 — 이 프로젝트가
+새로 짠 것은 관측/액션 스펙, 데이터 변환(FK 기반 EEF-delta), 보상함수, 환경(IsaacLab)뿐이다.
+
+- SO-101 URDF(`TheRobotStudio/SO-ARM100`)와 IsaacLab USD 자산(NVIDIA 공식
+  `Sim-to-Real-SO-101-Workshop`에서 재사용)을 `assets/`에 확보.
+- Isaac Sim 4.5.0.0 + IsaacLab v2.1.0을 `pac2026_isaaclab` conda 환경에 설치, SO-101 USD 로드/시뮬레이션
+  스텝까지 사용자 터미널에서 검증 완료 (`ai_layer/sim/smoke_test_so101.py`).
+- BC/RL 코드는 더미 배치로 이 세션에서 단위 검증 완료 (forward/inference, SAC의 4개 loss + target
+  network 업데이트 + `select_action`까지). `ai_layer/envs/so101_seam_env.py`(IsaacLab 환경)만
+  IsaacLab 의존성 때문에 미검증 — 사용자 터미널에서 최초 실행 검증 필요.
+- ⚠️ **세션 제약**: Isaac Sim/IsaacLab 실행(헤드리스 시뮬레이션 포함)은 이 코딩 세션(Bash 도구 샌드박스)
+  안에서는 CUDA P2P 검증 단계에서 멈춘다 (하드웨어/드라이버 문제 아님, 실제 터미널에서는 정상).
+  따라서 GPU 시뮬레이션 실행은 항상 사용자 터미널에서 진행한다.
 
 이 항목들은 실측 데이터(t_infer 분산, 초기 BC/RL 학습 결과)가 나오는 대로 확정하고 이 문서를 갱신할 것.
