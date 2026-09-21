@@ -39,6 +39,17 @@ import torch  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+# sys.path 재정렬(pip_prebundle을 뒤로 미는 방식)은 Kit의 동적 확장 로딩 때문에 효과가 없었다.
+# 실제 원인 체인: lerobot -> accelerate.Accelerator -> accelerate.commands.config.sagemaker ->
+# boto3 -> ... -> botocore.httpchecksum.DEFAULT_CHECKSUM_ALGORITHM (Isaac Sim이 내부적으로 끼워
+# 넣는 구버전 pip_prebundle/botocore가 우리 conda 환경의 최신 botocore보다 먼저 잡힘).
+# 이 SageMaker CLI 설정 경로는 이 프로젝트에서 전혀 쓰지 않으므로, boto3를 빈 더미 모듈로
+# sys.modules에 미리 채워 넣어 그 import 체인 자체가 실행되지 않게 한다 (경로 순서와 무관하게 확실).
+if "boto3" not in sys.modules:
+    import types
+
+    sys.modules["boto3"] = types.ModuleType("boto3")
+
 from lerobot.policies.sac.modeling_sac import SACPolicy  # noqa: E402
 
 from ai_layer.configs.so101_sac import build_so101_sac_config  # noqa: E402
