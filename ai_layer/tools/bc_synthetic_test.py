@@ -65,7 +65,15 @@ def make_fake_dataset(root: Path, episodes: int = 2, frames: int = 70) -> str:
 
 
 def main() -> None:
-    tmp = Path(tempfile.mkdtemp(prefix="so101_bc_synth_"))
+    import argparse
+
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--keep-dir", default=None, help="지정하면 임시 폴더 대신 여기에 만들고 지우지 않는다 (체크포인트 재사용)")
+    args = ap.parse_args()
+    tmp = Path(args.keep_dir) if args.keep_dir else Path(tempfile.mkdtemp(prefix="so101_bc_synth_"))
+    if args.keep_dir:
+        shutil.rmtree(tmp, ignore_errors=True)
+        tmp.mkdir(parents=True)
     try:
         root = tmp / "dataset"
         repo_id = make_fake_dataset(root)
@@ -128,7 +136,10 @@ def main() -> None:
         assert chunk[0, :, :3].abs().max() < 0.5
         print("BC SYNTHETIC TEST OK")
     finally:
-        shutil.rmtree(tmp, ignore_errors=True)
+        if not args.keep_dir:
+            shutil.rmtree(tmp, ignore_errors=True)
+        else:
+            print(f"kept: {tmp} (checkpoint: {tmp / 'out' / 'last'})")
 
 
 if __name__ == "__main__":

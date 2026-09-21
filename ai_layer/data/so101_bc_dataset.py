@@ -50,6 +50,7 @@ from ai_layer.kinematics import (
     zero_yaw,
 )
 from ai_layer.perception.seam_cv import SeamGrooveDetector
+from ai_layer.perception.seam_features import seam_features_from_chw
 
 # ImageNet 통계 (torchvision resnet18 사전학습 가중치 기준). 이미지 정규화에 사용.
 IMAGENET_MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32).reshape(3, 1, 1)
@@ -129,24 +130,8 @@ class SO101BCDataset(Dataset):
         return np.concatenate([deltas, gripper], axis=1)
 
     def _seam_features(self, image_chw: torch.Tensor) -> np.ndarray:
-        """CHW float[0,1] 이미지 -> (5,) seam 특징.
-
-        [lookahead 상대 row/h, 상대 col/w, 현재점 곡률, 굵기/max(h,w), 점 개수/(h·w)]
-        depth 없는 2D 전용 모드(3.1 CV 모듈 참고).
-        """
-        img = (image_chw.permute(1, 2, 0).numpy() * 255).astype(np.uint8)
-        h, w = img.shape[:2]
-        points = self.seam.detect(img)
-        if not points:
-            return np.zeros(SEAM_FEATURE_DIM, dtype=np.float32)
-        target = self.seam.lookahead_target(points, current_idx=0, lookahead=10)
-        cur = points[0]
-        dr = (target.pixel[0] - cur.pixel[0]) / h
-        dc = (target.pixel[1] - cur.pixel[1]) / w
-        return np.array(
-            [dr, dc, cur.curvature, cur.thickness_px / max(h, w), len(points) / (h * w)],
-            dtype=np.float32,
-        )
+        """CHW float[0,1] 이미지 -> (5,) seam 특징. 추론(control_bridge)과 같은 함수를 쓴다."""
+        return seam_features_from_chw(self.seam, image_chw)
 
     def precompute_seam_features(self, log_every: int = 500) -> np.ndarray:
         """전 프레임 seam 특징을 한 번 계산해 (N, 5)로 캐시. 학습 중 __getitem__은 조회만 한다."""

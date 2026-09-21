@@ -38,3 +38,26 @@ so101_follower 녹화와 같은 키/단위의 가짜 LeRobotDataset(2 에피소�
 임시 폴더에 만들고: 데이터셋 변환(state 9D, action 32×7, yaw=0, 그리퍼 0~100, seam 특징) → 정규화 통계 →
 ACT 6스텝 학습 → 체크포인트 저장(정책+전/후처리) → `bc_inference.load_bc_checkpoint`로 복원 → 청크 예측
 단위 확인까지 한 번에 돈다. 2026-09-21 통과. 코드를 고치면 이걸 먼저 돌릴 것.
+
+## chunk_bridge_test.py — AI → 제어 규약 검증
+
+```bash
+cd /home/dy/pac2026/pac2026-team
+PYTHONPATH=. /home/dy/pac2026/env_lerobot/bin/python ai_layer/tools/chunk_bridge_test.py \
+    --upstream /path/to/PAC_Supermoon   # jisu/control-layer clone (선택, 있으면 원본 코덱과 바이트 대조)
+```
+
+`ai_layer/control_bridge/`(규약 복사본, 청크 조립, 스냅샷 변환) 검사. 원본 clone을 주면 송지수 선배 코덱으로
+우리 바이트를 읽고/다시 써서 동일한지, 원본 `ChunkValidator`(policy 1, v_max 0.15)가 통과시키는지까지 본다.
+
+## AI 노드 실행 (`ai_layer/control_bridge/ai_node.py`)
+
+```bash
+# 배관 점검 (모델/로봇/카메라 없이)
+PYTHONPATH=. python ai_layer/control_bridge/ai_node.py --dry-run --fake-snapshot --iterations 3
+# 제어 계층과 실제 연결 (제어 쪽: control/tools/run_live.py --ai external)
+PYTHONPATH=. python ai_layer/control_bridge/ai_node.py --checkpoint outputs/bc_act/last --camera realsense
+```
+
+옵션: `--anchor obs|commit`(기본 commit = L1), `--eef-mode off|on|gripper_threshold|from_channel`(회의 전 기본 off),
+`--policy-id 1`(seam-welding), `--n-steps N`(청크 앞부분만), `--min-period 초`.

@@ -20,6 +20,12 @@ ai_layer/
   data/so101_bc_dataset.py   lerobot 원본(관절공간) 데이터셋 -> EEF-delta + seam 특징 변환 wrapper
                               (fps/관절순서 검사, seam 특징 캐시, 정규화 통계 compute_stats)
   bc_inference.py             체크포인트 폴더 로드(정책+전/후처리) + 청크 예측. RL teacher·ActionChunk 직렬화 공용
+  perception/seam_features.py 이미지 -> seam 특징(5). 학습과 추론이 같은 함수 사용
+  control_bridge/protocol.py  송지수 제어 규약 복사본 (ActionChunk/StateSnapshot + 고정 크기 코덱, 원본 da9f29f)
+  control_bridge/chunk_builder.py   모델 청크 (T,7) -> ActionChunk. 스텝 한계 클립, eef 매핑 스위치(EefMode)
+  control_bridge/snapshot_adapter.py StateSnapshot -> observation.state(9D), anchor 선택 (OBS_POSE / COMMIT_END)
+  control_bridge/ai_node.py   실행 노드: 스냅샷 SUB -> 이미지 -> ACT -> ActionChunk PUB (ZeroMQ ipc)
+  tools/chunk_bridge_test.py  규약 왕복 + 원본 코덱/validator 대조
   tools/fk_smoke.py           실로봇 URDF FK 스모크
   tools/bc_synthetic_test.py  가짜 데이터셋으로 BC 경로 끝-끝 실행 검증
   tools/README.md             env_lerobot 설치 순서
@@ -49,7 +55,12 @@ ai_layer/
        --repo-id <user>/so101-weld-demo --root <로컬경로> --epochs 100
    → outputs/bc_act/last/ (config.json, model.safetensors, policy_preprocessor.json, policy_postprocessor.json ...)
 
-3. RL(SAC) 학습 — ⚠️ IsaacLab 필요, 반드시 사용자 터미널에서 직접 실행 (AI 세션의 Bash 안에서는
+3. 추론 노드 (제어 계층과 연결). 제어 쪽이 `run_live.py --ai external` 로 떠 있을 때
+   PYTHONPATH=. /home/dy/pac2026/env_lerobot/bin/python ai_layer/control_bridge/ai_node.py \
+       --checkpoint outputs/bc_act/last --camera realsense --anchor commit --eef-mode off
+   (배관 점검: --dry-run --fake-snapshot --iterations 3)
+
+4. RL(SAC) 학습 — ⚠️ IsaacLab 필요, 반드시 사용자 터미널에서 직접 실행 (AI 세션의 Bash 안에서는
    CUDA P2P 검증 단계에서 멈춤)
    cd /home/dy/pac2026/IsaacLab
    ./isaaclab.sh -p /home/dy/pac2026/pac2026-team/ai_layer/train_rl.py --headless \
@@ -93,7 +104,8 @@ ai_layer/
 - gripper 채널(7번째)은 녹화값(0~100)을 그대로 통과한다. 이 채널이 펌프 0/1인지 집게 값인지, 집게 값이면
   실로봇(민제씨 캘리브)에 어떤 경로로 가는지는 **팀 회의에서 결정 예정**. 펌프 0/1 자리는 송지수 선배
   ActionChunk의 `eef` 필드.
-- ActionChunk 직렬화(추론 출력 → 제어 프로세스)는 아직 없음. `bc_inference.predict_chunk` 출력을 쓰면 됨.
+- ActionChunk 직렬화/송신은 `control_bridge/` 에 있음 (2026-09-21). 남은 것: 실카메라(D405) 촬영시각-측정시각
+  오프셋 캘리브레이션, 실로봇 HAL(송지수·민제씨 쪽), world==base 좌표계 가정 확인.
 - seam CV 특징(5dim, `so101_bc_dataset.py::_seam_features`)은 depth 없이 2D 픽셀 기준 축약 벡터.
   Wrist RGBD를 실제로 쓸 때는 `seam_cv.py::detect()`에 depth+intrinsics를 넘겨 3D 특징으로 확장할 것.
 - RL 환경의 목표 경로는 아직 절차적 직선 생성(ground truth)이며, 실제 카메라+seam_cv 인식을
