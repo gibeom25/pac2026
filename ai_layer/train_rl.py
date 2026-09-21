@@ -46,9 +46,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 # 이 SageMaker CLI 설정 경로는 이 프로젝트에서 전혀 쓰지 않으므로, boto3를 빈 더미 모듈로
 # sys.modules에 미리 채워 넣어 그 import 체인 자체가 실행되지 않게 한다 (경로 순서와 무관하게 확실).
 if "boto3" not in sys.modules:
+    import importlib.machinery
     import types
 
-    sys.modules["boto3"] = types.ModuleType("boto3")
+    _boto3_stub = types.ModuleType("boto3")
+    _boto3_stub.__spec__ = importlib.machinery.ModuleSpec("boto3", loader=None)
+    sys.modules["boto3"] = _boto3_stub
 
 from lerobot.policies.sac.modeling_sac import SACPolicy  # noqa: E402
 
