@@ -1,10 +1,12 @@
 """IsaacLab에 SO-101 USD가 정상적으로 로드되고 물리 스텝이 도는지 확인하는 헤드리스 스모크 테스트.
 
-실행 (IsaacLab 디렉토리에서, pac2026_isaaclab 환경):
-  ./isaaclab.sh -p /home/robot/pac2026/ai_layer/sim/smoke_test_so101.py
+실행 (사용자 터미널, IsaacLab 디렉토리에서):
+  cd /home/dy/pac2026/IsaacLab
+  ./isaaclab.sh -p /home/dy/pac2026/pac2026-team/ai_layer/sim/smoke_test_so101.py --headless
 
-목적: 새 conda 환경 + Isaac Sim 4.5.0.0 + IsaacLab v2.1.0 + NVIDIA 공식 SO-101 USD 자산
-조합이 실제로 동작하는지 최소 확인. BC/RL 학습 환경 자체는 아직 아님.
+목적: 이 서버 조합(Isaac Sim 5.1.0 + IsaacLab 2.3.2, /home/dy/pac2026/env_isaaclab) + NVIDIA 공식
+SO-101 USD 자산이 실제로 동작하는지 최소 확인. BC/RL 학습 환경 자체는 아직 아님.
+(예전 주석의 Isaac Sim 4.5 / /home/robot 경로는 다른 머신 기준이었음.)
 """
 
 import argparse

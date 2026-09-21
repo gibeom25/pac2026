@@ -20,6 +20,7 @@ from dataclasses import dataclass
 
 import cv2
 import numpy as np
+from scipy.spatial import cKDTree
 from skimage.morphology import skeletonize
 
 
@@ -79,27 +80,27 @@ class SeamGrooveDetector:
     # ---- 3. 순서 있는 polyline 정렬 ----
     @staticmethod
     def _find_endpoints(skeleton: np.ndarray) -> list[tuple[int, int]]:
-        # 8-이웃 개수가 1인 픽셀 = 끝점
-        ys, xs = np.nonzero(skeleton)
-        pts = set(zip(ys.tolist(), xs.tolist()))
-        endpoints = []
-        for y, x in pts:
-            n = sum(
-                (y + dy, x + dx) in pts
-                for dy in (-1, 0, 1)
-                for dx in (-1, 0, 1)
-                if not (dy == 0 and dx == 0)
-            )
-            if n == 1:
-                endpoints.append((y, x))
-        return endpoints
+        """8-이웃 개수가 1인 스켈레톤 픽셀 = 끝점. 컨볼루션으로 한 번에 센다 (파이썬 픽셀 루프 없음)."""
+        sk = (skeleton > 0).astype(np.uint8)
+        kernel = np.ones((3, 3), dtype=np.float32)
+        kernel[1, 1] = 0.0
+        neighbor_count = cv2.filter2D(sk.astype(np.float32), -1, kernel, borderType=cv2.BORDER_CONSTANT)
+        ys, xs = np.nonzero((sk > 0) & (np.rint(neighbor_count).astype(int) == 1))
+        return list(zip(ys.tolist(), xs.tolist()))
 
     def _order_polyline(self, skeleton: np.ndarray) -> np.ndarray:
-        """스켈레톤 픽셀을 끝점에서 시작해 인접 픽셀을 따라가며 순서를 매긴다."""
+        """스켈레톤 픽셀을 끝점에서 시작해 인접 픽셀을 따라가며 순서를 매긴다.
+
+        - 분기점(이웃 2개 이상)에서는 직전 진행 방향과 가장 비슷한 이웃을 고른다
+          (예전: 임의의 첫 이웃 → Y자/십자에서 순서가 뒤엉김).
+        - 끊긴 구간은 KD-tree로 가장 가까운 남은 점을 찾는다 (예전: 남은 점 전부와 거리 계산, O(N²)).
+        """
         ys, xs = np.nonzero(skeleton)
-        remaining = set(zip(ys.tolist(), xs.tolist()))
-        if not remaining:
+        if len(ys) == 0:
             return np.zeros((0, 2), dtype=int)
+        pts = np.stack([ys, xs], axis=1)
+        remaining = set(map(tuple, pts.tolist()))
+        tree = cKDTree(pts)
 
         endpoints = self._find_endpoints(skeleton)
         start = endpoints[0] if endpoints else next(iter(remaining))
@@ -107,6 +108,7 @@ class SeamGrooveDetector:
         ordered = [start]
         remaining.discard(start)
         current = start
+        prev_dir = np.zeros(2)
         while remaining:
             y, x = current
             neighbors = [
@@ -116,13 +118,35 @@ class SeamGrooveDetector:
                 if (dy != 0 or dx != 0) and (y + dy, x + dx) in remaining
             ]
             if not neighbors:
-                # 끊긴 구간: max_gap_px 이내의 가장 가까운 남은 점으로 점프
-                dists = {p: np.hypot(p[0] - y, p[1] - x) for p in remaining}
-                nearest = min(dists, key=dists.get)
-                if dists[nearest] > self.cfg.max_gap_px:
-                    break  # 진짜 끊김 — 여기서 polyline 종료
-                neighbors = [nearest]
-            nxt = neighbors[0]
+                # 끊긴 구간: max_gap_px 이내의 가장 가까운 남은 점으로 점프 (KD-tree, 가까운 후보부터 확인)
+                k = min(len(pts), 16)
+                dists, idxs = tree.query([y, x], k=k)
+                dists = np.atleast_1d(dists)
+                idxs = np.atleast_1d(idxs)
+                nearest = None
+                for d, i in zip(dists, idxs):
+                    cand = (int(pts[i, 0]), int(pts[i, 1]))
+                    if cand in remaining:
+                        nearest = cand if d <= self.cfg.max_gap_px else None
+                        break
+                if nearest is None:
+                    # k개 안에 남은 점이 없으면 전체에서 찾는다 (드묾)
+                    rem = np.array(list(remaining))
+                    d_all = np.hypot(rem[:, 0] - y, rem[:, 1] - x)
+                    j = int(d_all.argmin())
+                    if d_all[j] > self.cfg.max_gap_px:
+                        break  # 진짜 끊김 — 여기서 polyline 종료
+                    nearest = (int(rem[j, 0]), int(rem[j, 1]))
+                nxt = nearest
+            elif len(neighbors) == 1 or not prev_dir.any():
+                nxt = neighbors[0]
+            else:
+                # 분기점: 진행 방향(prev_dir)과 코사인 유사도가 가장 큰 이웃
+                cand = np.array(neighbors, dtype=float) - np.array(current, dtype=float)
+                cand /= np.linalg.norm(cand, axis=1, keepdims=True)
+                nxt = neighbors[int(np.argmax(cand @ prev_dir))]
+            prev_dir = np.array(nxt, dtype=float) - np.array(current, dtype=float)
+            prev_dir /= max(np.linalg.norm(prev_dir), 1e-6)
             ordered.append(nxt)
             remaining.discard(nxt)
             current = nxt

@@ -2,18 +2,24 @@
 
 설계 문서: docs/AI_추론계층_프레임워크.md 3.4절.
 
-⚠️ 이 파일은 IsaacLab이 필요해 이번 세션(샌드박스)에서 직접 실행 검증을 못했다 (IsaacLab 자체는
-smoke_test_so101.py로 사용자 터미널에서 검증 완료 — ai_layer_welding_trajectory_design.md 메모리
-참고). 최초 실행 시 API 세부사항(관측 스페이스 타입, IK 컨트롤러 연동 등)에서 디버깅이 필요할 수 있다.
+⚠️ IsaacLab이 필요해 Claude/Grok 세션(샌드박스)에서는 실행 검증을 못 한다. 사용자 터미널에서
+`./isaaclab.sh -p ai_layer/train_rl.py` 로 최초 실행 시 API 세부에서 디버깅이 필요할 수 있다.
 
-1차 버전 범위 (명시적 단순화, docs 7장에 TODO로 반영):
-  - 목표 경로(용접선)는 실제 카메라 렌더링/seam_cv 인식이 아니라 **에피소드마다 절차적으로 생성한
-    3D 폴리라인**을 ground truth로 사용한다. 즉 environment_state(seam 특징)는 seam_cv.py를 거치지
-    않고 절차적 경로에서 직접 계산한다. 실제 비전 파이프라인(카메라+seam_cv)을 루프에 넣는 것은
-    후속 작업 — 지금은 "경로를 따라가는 방법(RL)"만 학습하고, 인식(perception)은 배포 시 BC/RL이
-    아니라 3.1절 CV 모듈이 별도로 담당한다는 설계와 일치시키기 위함이기도 하다.
-  - 카메라는 아직 붙이지 않았다 (SO-ARM101-USD.usd에 카메라가 포함돼 있지만 정확한 마운트 프림
-    경로/오프셋을 확인 못해 연결 보류). observation.images.wrist는 지금은 0으로 채운 placeholder.
+BC(configs/so101_act_bc.py)와 맞춘 것 (2026-09-21):
+  - observation.state = 9 (xyz + rot6d, base frame). 예전 quat 벡터부(3)는 BC의 표현과 달랐다.
+  - 이미지 키 observation.images.wrist (BC와 동일).
+  - BC teacher는 (policy, preprocessor, postprocessor)로 주입하고, 출력(m/rad)을 env 액션 스케일
+    ([-1,1])로 나눠서 비교한다. 예전엔 단위가 달라 R_imitation이 무의미했다.
+  - IK는 팔 관절 5개만 푼다 (예전 ".*"는 턱 Jaw까지 움직여 EE를 맞추려 했다).
+  - 보상 목표속도(target_speed_base)는 action_scale_pos보다 작게 둔다.
+  - 보상 가중치 스케줄은 train_rl이 set_total_env_steps()로 알려준 전체 길이에 비례한다.
+
+1차 버전 범위 (명시적 단순화):
+  - 목표 경로(용접선)는 에피소드마다 절차적으로 생성한 3D 폴리라인. seam_cv를 거치지 않고
+    절차적 경로에서 직접 seam 특징을 계산한다. 실제 카메라+seam_cv 연결은 후속 작업.
+  - 카메라 미연결. observation.images.wrist는 0 placeholder.
+  - Isaac USD는 아직 기본 SO-101 (assets/so101_isaac). 실로봇(PAC_Supermoon, tcp_link) 끝단과
+    다르다. EE 바디는 기본 SO-101의 "gripper". USD를 UMI+D405로 바꾸는 것은 후속 작업.
 """
 
 from __future__ import annotations
@@ -30,15 +36,17 @@ from isaaclab.envs import DirectRLEnv, DirectRLEnvCfg
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.utils import configclass
-from isaaclab.utils.math import sample_uniform, subtract_frame_transforms
+from isaaclab.utils.math import matrix_from_quat, sample_uniform, subtract_frame_transforms
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "assets" / "so101_isaac"))
 from so101_cfg import SO101_CFG  # noqa: E402
 
 from ai_layer.configs.so101_sac import CONTINUOUS_ACTION_DIM, IMAGE_KEY, SEAM_FEATURE_DIM, STATE_DIM  # noqa: E402
-from ai_layer.rl.reward import WeightSchedule, total_reward  # noqa: E402
+from ai_layer.rl.reward import WeightSchedule, _point_to_polyline, total_reward  # noqa: E402
 
 EE_BODY_NAME = "gripper"  # so101_cfg.SO101_CFG body 목록: base/shoulder/upper_arm/lower_arm/wrist/gripper/jaw
+# IK가 움직일 관절: 팔 5개만. Jaw(그리퍼)는 제외.
+ARM_JOINT_NAMES = ["Rotation", "Pitch", "Elbow", "Wrist_Pitch", "Wrist_Roll"]
 PATH_NUM_POINTS = 20
 
 
@@ -47,15 +55,14 @@ class SO101SeamEnvCfg(DirectRLEnvCfg):
     decimation = 2
     episode_length_s = 8.0
 
+    # 60 Hz 물리 × decimation 2 = 30 Hz 정책 스텝 (= 송지수 dt 33.3 ms)
     sim: sim_utils.SimulationCfg = sim_utils.SimulationCfg(dt=1.0 / 60.0, render_interval=decimation)
 
     robot_cfg: ArticulationCfg = SO101_CFG.replace(prim_path="/World/envs/env_.*/Robot")
 
-    # 7 = 연속 EEF-delta(6) + 이산 gripper(1, SAC의 num_discrete_actions로 별도 처리되지만
-    # env에는 하나의 텐서로 들어옴 — configs/so101_sac.py DISCRETE_DIMENSION_INDEX=-1 참고)
+    # 7 = 연속 EEF-delta(6) + 이산 gripper(1). SAC은 num_discrete_actions로 마지막 차원을 따로 다룬다.
     action_space = CONTINUOUS_ACTION_DIM + 1
-    # 참고용 (실제로는 train_rl.py가 dict 관측을 직접 다룸, gym space 타입 강제 안 함)
-    observation_space = STATE_DIM + SEAM_FEATURE_DIM
+    observation_space = STATE_DIM + SEAM_FEATURE_DIM  # 참고용 (train_rl은 dict 관측을 직접 다룸)
     state_space = 0
 
     scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=64, env_spacing=2.5, replicate_physics=True)
@@ -67,15 +74,17 @@ class SO101SeamEnvCfg(DirectRLEnvCfg):
 
     action_scale_pos = 0.02  # 최대 EEF 위치 delta (m/step)
     action_scale_rot = 0.05  # 최대 EEF 회전 delta (rad/step)
+    target_speed_base = 0.01  # 보상 목표 진행량 (m/step). action_scale_pos 보다 작아야 함.
 
 
 class SO101SeamEnv(DirectRLEnv):
     cfg: SO101SeamEnvCfg
 
     def __init__(self, cfg: SO101SeamEnvCfg, render_mode: str | None = None, **kwargs):
+        assert cfg.target_speed_base < cfg.action_scale_pos, "target_speed_base는 action_scale_pos보다 작아야 한다"
         super().__init__(cfg, render_mode, **kwargs)
 
-        self._robot_entity_cfg = SceneEntityCfg("robot", joint_names=[".*"], body_names=[EE_BODY_NAME])
+        self._robot_entity_cfg = SceneEntityCfg("robot", joint_names=ARM_JOINT_NAMES, body_names=[EE_BODY_NAME])
         self._robot_entity_cfg.resolve(self.scene)
         self._ee_jacobi_idx = (
             self._robot_entity_cfg.body_ids[0] - 1
@@ -86,18 +95,30 @@ class SO101SeamEnv(DirectRLEnv):
         ik_cfg = DifferentialIKControllerCfg(command_type="pose", use_relative_mode=True, ik_method="dls")
         self._ik_controller = DifferentialIKController(ik_cfg, num_envs=self.num_envs, device=self.device)
 
+        self._action_scale = torch.tensor(
+            [self.cfg.action_scale_pos] * 3 + [self.cfg.action_scale_rot] * 3, device=self.device
+        )
         self._target_polyline = torch.zeros(self.num_envs, PATH_NUM_POINTS, 3, device=self.device)
         self._path_curvature = torch.zeros(self.num_envs, device=self.device)
         self._path_thickness = torch.ones(self.num_envs, device=self.device)
         self._prev_progress = torch.zeros(self.num_envs, device=self.device)
         self._prev_action = torch.zeros(self.num_envs, CONTINUOUS_ACTION_DIM, device=self.device)
+        self._continuous_action = torch.zeros(self.num_envs, CONTINUOUS_ACTION_DIM, device=self.device)
+        self._ee_delta_cmd = torch.zeros(self.num_envs, CONTINUOUS_ACTION_DIM, device=self.device)
         self._weight_schedule = WeightSchedule()
-        self._bc_reference = None  # train_rl.py가 set_bc_reference()로 주입 (R_imitation용, 선택)
+        self._total_env_steps = max(1, int(self.max_episode_length) * 100)  # set_total_env_steps로 덮어씀
+        self._bc = None  # (policy, preprocessor, postprocessor) — set_bc_reference()로 주입
 
-    def set_bc_reference(self, bc_policy) -> None:
-        """3.4절 R_imitation용 BC(ACT) teacher 주입. None이면 모방항 0으로 학습."""
-        self._bc_reference = bc_policy
+    # ------------------------------------------------------------------ 외부 주입
+    def set_bc_reference(self, policy, preprocessor, postprocessor) -> None:
+        """3.4절 R_imitation용 BC(ACT) teacher. None이면 모방항 0으로 학습."""
+        self._bc = None if policy is None else (policy, preprocessor, postprocessor)
 
+    def set_total_env_steps(self, total_env_steps: int) -> None:
+        """보상 가중치 스케줄(0→1)의 분모. train_rl이 num_steps // num_envs 를 넘긴다."""
+        self._total_env_steps = max(1, int(total_env_steps))
+
+    # ------------------------------------------------------------------ 씬
     def _setup_scene(self):
         self.robot = Articulation(self.cfg.robot_cfg)
         self.scene.articulations["robot"] = self.robot
@@ -109,7 +130,7 @@ class SO101SeamEnv(DirectRLEnv):
         light_cfg.func("/World/Light", light_cfg)
 
     def _get_ee_pose_b(self) -> tuple[torch.Tensor, torch.Tensor]:
-        """base(root) frame 기준 EE pose (pos, quat)."""
+        """base(root) frame 기준 EE pose (pos, quat wxyz)."""
         ee_pose_w = self.robot.data.body_state_w[:, self._robot_entity_cfg.body_ids[0], 0:7]
         root_pose_w = self.robot.data.root_state_w[:, 0:7]
         ee_pos_b, ee_quat_b = subtract_frame_transforms(
@@ -117,14 +138,12 @@ class SO101SeamEnv(DirectRLEnv):
         )
         return ee_pos_b, ee_quat_b
 
+    # ------------------------------------------------------------------ 액션
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
         continuous = actions[:, :CONTINUOUS_ACTION_DIM].clamp(-1.0, 1.0)
         # 그리퍼/펌프 이산 신호(actions[:, -1])는 1차 버전에서 물리 연동 없음 — TODO
         self._continuous_action = continuous
-        scale = torch.tensor(
-            [self.cfg.action_scale_pos] * 3 + [self.cfg.action_scale_rot] * 3, device=self.device
-        )
-        self._ee_delta_cmd = continuous * scale
+        self._ee_delta_cmd = continuous * self._action_scale
 
     def _apply_action(self) -> None:
         ee_pos_b, ee_quat_b = self._get_ee_pose_b()
@@ -137,26 +156,22 @@ class SO101SeamEnv(DirectRLEnv):
         joint_pos_des = self._ik_controller.compute(ee_pos_b, ee_quat_b, jacobian, joint_pos)
         self.robot.set_joint_position_target(joint_pos_des, joint_ids=self._robot_entity_cfg.joint_ids)
 
+    # ------------------------------------------------------------------ 관측
     def _get_observations(self) -> dict:
         ee_pos_b, ee_quat_b = self._get_ee_pose_b()
-        state = torch.cat([ee_pos_b, ee_quat_b[:, 1:4]], dim=-1)  # (N,6): pos(3) + quat벡터부(3), 1차 근사
+        R = matrix_from_quat(ee_quat_b)  # (N, 3, 3)
+        rot6d = torch.cat([R[:, :, 0], R[:, :, 1]], dim=-1)  # 회전행렬 앞 두 열 (kinematics.pose_to_state와 동일)
+        state = torch.cat([ee_pos_b, rot6d], dim=-1)  # (N, 9)
 
-        # ground-truth 경로 기반 seam 특징 (실제 CV 파이프라인 연결 전까지의 대체값, 모듈 docstring 참고)
-        from ai_layer.rl.reward import _point_to_polyline
-
-        perp_dist, progress, seg_idx = _point_to_polyline(ee_pos_b, self._target_polyline)
+        # ground-truth 경로 기반 seam 특징 (실제 CV 파이프라인 연결 전까지의 대체값)
+        _, _, seg_idx = _point_to_polyline(ee_pos_b, self._target_polyline)
         lookahead_idx = (seg_idx + 2).clamp(max=PATH_NUM_POINTS - 1)
         lookahead_pt = self._target_polyline.gather(
             1, lookahead_idx.view(-1, 1, 1).expand(-1, 1, 3)
         ).squeeze(1)
         rel = lookahead_pt - ee_pos_b
         env_state = torch.cat(
-            [
-                rel,
-                self._path_curvature.unsqueeze(-1),
-                self._path_thickness.unsqueeze(-1),
-            ],
-            dim=-1,
+            [rel, self._path_curvature.unsqueeze(-1), self._path_thickness.unsqueeze(-1)], dim=-1
         )  # (N, 5) — perception/seam_cv.py 출력 차원과 동일하게 맞춤
 
         image_placeholder = torch.zeros(self.num_envs, 3, 240, 320, device=self.device)  # TODO: 실제 카메라 연결
@@ -167,16 +182,25 @@ class SO101SeamEnv(DirectRLEnv):
             IMAGE_KEY: image_placeholder,
         }
 
+    # ------------------------------------------------------------------ 보상
+    def _bc_action_scaled(self, obs: dict) -> torch.Tensor | None:
+        """BC teacher 청크의 첫 스텝(m, rad) -> env 액션 스케일 [-1,1]로 변환."""
+        if self._bc is None:
+            return None
+        policy, pre, post = self._bc
+        with torch.no_grad():
+            batch = pre(dict(obs))
+            chunk = policy.predict_action_chunk(batch)  # (N, chunk, 7) 정규화 공간
+            first = post(chunk[:, 0, :])  # (N, 7) 실제 단위, CPU
+        delta = first[:, :CONTINUOUS_ACTION_DIM].to(self.device)
+        return (delta / self._action_scale).clamp(-1.0, 1.0)
+
     def _get_rewards(self) -> torch.Tensor:
         ee_pos_b, _ = self._get_ee_pose_b()
-        progress_fraction = float(self.common_step_counter) / max(1, self.max_episode_length * 100)
+        progress_fraction = float(self.common_step_counter) / float(self._total_env_steps)
         weights = self._weight_schedule.weights(progress_fraction)
 
-        action_bc = None
-        if self._bc_reference is not None:
-            with torch.no_grad():
-                bc_obs = self._get_observations()
-                action_bc = self._bc_reference.select_action(bc_obs)[:, :CONTINUOUS_ACTION_DIM]
+        action_bc = self._bc_action_scaled(self._get_observations()) if self._bc is not None else None
 
         reward, new_progress = total_reward(
             action_rl=self._continuous_action,
@@ -188,9 +212,11 @@ class SO101SeamEnv(DirectRLEnv):
             thickness_at_progress=self._path_thickness,
             weights=weights,
             action_bc=action_bc,
+            lambda_consistency=self._weight_schedule.lambda_consistency,
+            base_speed=self.cfg.target_speed_base,
         )
         self._prev_progress = new_progress
-        self._prev_action = self._continuous_action
+        self._prev_action = self._continuous_action.clone()
         return reward
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
@@ -198,6 +224,7 @@ class SO101SeamEnv(DirectRLEnv):
         terminated = torch.zeros_like(time_out)
         return terminated, time_out
 
+    # ------------------------------------------------------------------ 리셋
     def _reset_idx(self, env_ids):
         if env_ids is None:
             env_ids = self.robot._ALL_INDICES
@@ -212,11 +239,7 @@ class SO101SeamEnv(DirectRLEnv):
         self._prev_action[env_ids] = 0.0
 
     def _generate_procedural_path(self, env_ids: torch.Tensor) -> None:
-        """에피소드별 랜덤 스무스 경로 생성 (직선 보간, 1차 버전 — 곡선/지그재그는 TODO).
-
-        docs 3.2 "궤적 길이/경로 형태/끊김 빈도/선 굵기별 속도"까지 반영하려면 곡률 있는 곡선과
-        선 굵기 랜덤화가 필요 — 지금은 랜덤 시작/끝점 직선 + 일정 곡률/굵기 상수로 단순화.
-        """
+        """에피소드별 랜덤 스무스 경로 생성 (직선 보간, 1차 버전 — 곡선/지그재그는 TODO)."""
         n = len(env_ids)
         x0 = sample_uniform(self.cfg.path_x_range[0], self.cfg.path_x_range[1], (n,), self.device)
         y0 = sample_uniform(self.cfg.path_y_range[0], self.cfg.path_y_range[1], (n,), self.device)

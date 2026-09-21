@@ -57,7 +57,7 @@ def _point_to_polyline(point: torch.Tensor, polyline: torch.Tensor) -> tuple[tor
     return perp_dist, progress, seg_idx
 
 
-def target_speed(curvature: torch.Tensor, thickness: torch.Tensor, base_speed: float = 0.05) -> torch.Tensor:
+def target_speed(curvature: torch.Tensor, thickness: torch.Tensor, base_speed: float = 0.01) -> torch.Tensor:
     """곡률·선 굵기에 따른 목표 진행속도. docs 3.4: 곡률 클수록/선 얇을수록 감속.
 
     base_speed: 직선/표준 굵기 기준 목표 진행량(한 스텝당, m). 실측 데이터로 튜닝 필요.
@@ -74,8 +74,12 @@ def track_reward(
     curvature_at_progress: torch.Tensor,
     thickness_at_progress: torch.Tensor,
     lambda_consistency: float = 0.5,
+    base_speed: float = 0.01,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """R_track = -|d_perp| + progress_gain - λ*|Δprogress_t - Δprogress_{t-1}(추정)|.
+
+    base_speed: 목표 진행량(m/step). env의 최대 위치 delta(action_scale_pos)보다 작아야 한다.
+    (예전 기본 0.05는 action_scale_pos 0.02보다 커서 로봇이 물리적으로 도달 불가 → 상시 패널티)
 
     Returns:
         reward: (N,)
@@ -83,7 +87,7 @@ def track_reward(
     """
     perp_dist, progress, _ = _point_to_polyline(eef_pos, target_polyline)
     delta_progress = (progress - prev_progress).clamp_min(0.0)  # 역행은 0 취급 (단조 진행 가정)
-    target = target_speed(curvature_at_progress, thickness_at_progress)
+    target = target_speed(curvature_at_progress, thickness_at_progress, base_speed=base_speed)
     consistency_penalty = (delta_progress - target).abs()
 
     reward = -perp_dist + delta_progress - lambda_consistency * consistency_penalty
@@ -125,11 +129,14 @@ def total_reward(
     weights: tuple[float, float, float],
     action_bc: torch.Tensor | None = None,
     lambda_consistency: float = 0.5,
+    base_speed: float = 0.01,
 ) -> tuple[torch.Tensor, torch.Tensor]:
+    """action_rl / action_bc / action_tm1 은 모두 같은 스케일(env 정규화 [-1,1])이어야 한다."""
     w1, w2, w3 = weights
     r_imit = imitation_reward(action_rl, action_bc)
     r_track, new_progress = track_reward(
-        eef_pos, target_polyline, prev_progress, curvature_at_progress, thickness_at_progress, lambda_consistency
+        eef_pos, target_polyline, prev_progress, curvature_at_progress, thickness_at_progress,
+        lambda_consistency, base_speed=base_speed,
     )
     r_smooth = smoothness_reward(action_rl, action_tm1)
     reward = w1 * r_imit + w2 * r_track + w3 * r_smooth

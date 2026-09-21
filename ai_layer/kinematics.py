@@ -1,9 +1,9 @@
-"""SO-101 URDF 기반 FK/델타 변환 유틸리티.
+"""PAC_Supermoon URDF 기반 FK/델타 변환.
 
-설계 원칙(docs/AI_추론계층_프레임워크.md 0절 "EEF-delta 통일")에 따라, lerobot이
-기록하는 관절공간(joint-space) 데이터를 EEF-delta 시퀀스로 변환하는 데 쓴다.
-FK/IK 자체는 lerobot.model.kinematics.RobotKinematics(placo 기반)를 그대로 사용하고,
-여기서는 이 프로젝트의 URDF/관절 이름에 맞춘 얇은 래퍼 + delta 계산만 담당한다.
+하드웨어 근거: Minje0420/PAC_Supermoon 브랜치 `codex/add-so101-final-effector`
+(D405 홀더, TCP=`tcp_link`). actioncam-vio는 적용하지 않는다.
+제어 규약: 송지수 ActionChunk — 직전 스텝 대비 증분 EEF-delta, 회전은 회전벡터
+(월드 왼쪽 곱). 그리퍼 채널은 유지한다.
 """
 
 from __future__ import annotations
@@ -15,10 +15,11 @@ import numpy as np
 from lerobot.model.kinematics import RobotKinematics
 from lerobot.utils.rotation import Rotation
 
-ASSETS_DIR = Path(__file__).resolve().parent.parent / "assets" / "so101"
-URDF_PATH = ASSETS_DIR / "so101_new_calib.urdf"
+ASSETS_DIR = Path(__file__).resolve().parent.parent / "assets" / "pac_supermoon"
+URDF_PATH = ASSETS_DIR / "so_arm_d405.urdf"
+TARGET_FRAME_NAME = "tcp_link"
 
-# so101_follower/so101_leader 공통 관절 순서 (lerobot 표준)
+# so101_follower/so101_leader 공통 관절 순서 (lerobot 표준). gripper 포함.
 JOINT_NAMES = [
     "shoulder_pan",
     "shoulder_lift",
@@ -29,8 +30,7 @@ JOINT_NAMES = [
 ]
 
 # lerobot 관절명 -> IsaacLab/USD 관절명 (assets/so101_isaac/so101_cfg.py 기준).
-# 같은 순서(JOINT_NAMES)로 대응되므로 zip(JOINT_NAMES, ISAAC_JOINT_NAMES)으로 매핑한다.
-# 상세: assets/so101_isaac/README.md "관절 이름 매핑" 표 참고.
+# Isaac USD는 아직 기본 SO-101. 실로봇 URDF와 끝단이 다르니 시뮬 자산은 후속 작업.
 ISAAC_JOINT_NAMES = ["Rotation", "Pitch", "Elbow", "Wrist_Pitch", "Wrist_Roll", "Jaw"]
 LEROBOT_TO_ISAAC_JOINT = dict(zip(JOINT_NAMES, ISAAC_JOINT_NAMES))
 
@@ -38,22 +38,90 @@ LEROBOT_TO_ISAAC_JOINT = dict(zip(JOINT_NAMES, ISAAC_JOINT_NAMES))
 def build_kinematics(urdf_path: Path | str = URDF_PATH) -> RobotKinematics:
     return RobotKinematics(
         urdf_path=str(urdf_path),
-        target_frame_name="gripper_frame_link",
+        target_frame_name=TARGET_FRAME_NAME,
         joint_names=JOINT_NAMES,
     )
 
 
 def pose_to_xyzrotvec(T: np.ndarray) -> np.ndarray:
-    """4x4 변환행렬 -> [x, y, z, rx, ry, rz] (rotation vector, world frame 기준)."""
+    """4x4 변환행렬 -> [x, y, z, rx, ry, rz] (rotation vector, world frame)."""
     pos = T[:3, 3]
     rotvec = Rotation.from_matrix(T[:3, :3]).as_rotvec()
     return np.concatenate([pos, rotvec])
 
 
+def rotvec_to_rot6d(rotvec: np.ndarray) -> np.ndarray:
+    """회전벡터 (3,) -> 6D 회전 표현 (6,) = 회전행렬의 첫 열 + 둘째 열.
+
+    회전벡터는 회전각이 180°를 지나면 방향이 뒤집혀 값이 불연속으로 튄다. 6D 표현은 연속이라
+    신경망 입력(observation.state)에 적합하다. 셋째 열은 앞 두 열의 외적으로 복원된다.
+    """
+    R = Rotation.from_rotvec(np.asarray(rotvec, dtype=float).reshape(3)).as_matrix()
+    return np.concatenate([R[:, 0], R[:, 1]])
+
+
+def rot6d_to_rotvec(rot6d: np.ndarray) -> np.ndarray:
+    """6D 회전 표현 (6,) -> 회전벡터 (3,). Gram-Schmidt로 직교화 후 행렬 복원."""
+    v = np.asarray(rot6d, dtype=float).reshape(6)
+    a1, a2 = v[:3], v[3:]
+    b1 = a1 / max(np.linalg.norm(a1), 1e-8)
+    a2 = a2 - np.dot(b1, a2) * b1
+    b2 = a2 / max(np.linalg.norm(a2), 1e-8)
+    b3 = np.cross(b1, b2)
+    return Rotation.from_matrix(np.stack([b1, b2, b3], axis=1)).as_rotvec()
+
+
+def pose_to_state(pose_xyzrotvec: np.ndarray) -> np.ndarray:
+    """절대 pose (6,) [xyz, rotvec] -> observation.state (9,) [xyz, rot6d]."""
+    p = np.asarray(pose_xyzrotvec, dtype=float).reshape(6)
+    return np.concatenate([p[:3], rotvec_to_rot6d(p[3:6])])
+
+
+def state_to_pose(state: np.ndarray) -> np.ndarray:
+    """observation.state (9,) -> 절대 pose (6,) [xyz, rotvec]."""
+    s = np.asarray(state, dtype=float).reshape(9)
+    return np.concatenate([s[:3], rot6d_to_rotvec(s[3:9])])
+
+
+def pose_delta(from_pose: np.ndarray, to_pose: np.ndarray) -> np.ndarray:
+    """절대 pose (6,) -> 증분 (6,).
+
+    위치: p_k = p_{k-1} + dp
+    회전: R_k = Exp(w) @ R_{k-1}  (월드 기준 왼쪽 곱, 송지수 ActionChunk)
+    """
+    from_pose = np.asarray(from_pose, dtype=float).reshape(6)
+    to_pose = np.asarray(to_pose, dtype=float).reshape(6)
+    dp = to_pose[:3] - from_pose[:3]
+    r_from = Rotation.from_rotvec(from_pose[3:6]).as_matrix()
+    r_to = Rotation.from_rotvec(to_pose[3:6]).as_matrix()
+    w = Rotation.from_matrix(r_to @ r_from.T).as_rotvec()
+    return np.concatenate([dp, w])
+
+
+# 회전 증분 (rx, ry, rz) 중 yaw(월드 z축 회전) 인덱스. 델타 7차원 기준 5번.
+YAW_INDEX = 5
+
+
+def zero_yaw(delta: np.ndarray) -> np.ndarray:
+    """(T, 6 or 7) 증분에서 yaw 성분(drz)을 0으로 만든 사본을 돌려준다.
+
+    민제씨 PAC_Supermoon 실로봇은 5관절이라 IK가 5D(XYZ + roll/pitch)만 푼다.
+    HAL이 yaw를 버리므로 학습 타깃에서도 0으로 고정한다 (2026-09-21 결정).
+    """
+    out = np.array(delta, dtype=float, copy=True)
+    out[..., YAW_INDEX] = 0.0
+    return out
+
+
 def joint_traj_to_eef_pose_traj(
     kin: RobotKinematics, joint_traj_deg: np.ndarray
 ) -> np.ndarray:
-    """(T, 6) 관절각(deg) 시퀀스 -> (T, 6) EEF pose(m, rotvec) 시퀀스."""
+    """(T, 6) 관절각(deg) 시퀀스 -> (T, 6) EEF pose(m, rotvec) 시퀀스.
+
+    placo(RobotWrapper.set_joint)는 C++ double만 받는다. LeRobotDataset은 float32 텐서를 주므로
+    여기서 반드시 float64로 캐스팅한다 (안 하면 Boost.Python.ArgumentError).
+    """
+    joint_traj_deg = np.asarray(joint_traj_deg, dtype=np.float64)
     poses = np.zeros((joint_traj_deg.shape[0], 6), dtype=float)
     for t in range(joint_traj_deg.shape[0]):
         T = kin.forward_kinematics(joint_traj_deg[t])
@@ -61,26 +129,39 @@ def joint_traj_to_eef_pose_traj(
     return poses
 
 
-def eef_pose_traj_to_delta_traj(eef_pose_traj: np.ndarray) -> np.ndarray:
-    """(T, 6) 절대 pose 시퀀스 -> (T, 6) EEF-delta 시퀀스 (첫 프레임 delta=0).
+def eef_pose_traj_to_delta_traj(
+    eef_pose_traj: np.ndarray, anchor_pose: np.ndarray | None = None
+) -> np.ndarray:
+    """(T, 6) 절대 pose -> (T, 6) 증분 EEF-delta.
 
-    회전은 rotvec 단순 차분으로 근사한다 — 두 자세 사이 회전량이 작다는 전제(제어
-    주기/AI 시퀀스 스텝 간격이 충분히 촘촘하다는 전제, docs 4.4절 dt_AI=20ms 참고)
-    하에서 유효하다. 프레임 간 회전이 커지는 경우(끊긴 데모, 저주파 샘플링) 별도
-    쿼터니언 기반 relative-rotation 계산으로 교체할 것.
+    anchor_pose가 있으면 delta[0] = anchor(관측 시점 t의 실제 pose) -> pose[0].
+    호출 측(so101_bc_dataset)이 pose[0]을 t+dt 시점의 명령으로 넣으므로 delta[0]은
+    "지금 위치에서 33ms 뒤 목표까지"가 된다 (ActionChunk 스텝 0 의미와 일치).
+    없으면 delta[0] = 0 이고 이후는 프레임 간 증분.
     """
+    eef_pose_traj = np.asarray(eef_pose_traj, dtype=float)
     delta = np.zeros_like(eef_pose_traj)
-    delta[1:] = eef_pose_traj[1:] - eef_pose_traj[:-1]
+    if eef_pose_traj.shape[0] == 0:
+        return delta
+    if anchor_pose is not None:
+        delta[0] = pose_delta(anchor_pose, eef_pose_traj[0])
+    for t in range(1, eef_pose_traj.shape[0]):
+        delta[t] = pose_delta(eef_pose_traj[t - 1], eef_pose_traj[t])
     return delta
 
 
 def joint_traj_to_eef_delta_traj(
-    kin: RobotKinematics, joint_traj_deg: np.ndarray, gripper_signal: np.ndarray
+    kin: RobotKinematics,
+    joint_traj_deg: np.ndarray,
+    gripper_signal: np.ndarray,
+    anchor_pose: np.ndarray | None = None,
 ) -> np.ndarray:
-    """관절공간 궤적 -> (dx, dy, dz, drx, dry, drz, gripper_signal[0/1]) 시퀀스.
+    """관절공간 궤적 -> (dx, dy, dz, drx, dry, drz, gripper) 시퀀스.
 
-    gripper_signal은 그대로 통과시킨다 (docs 2장 인터페이스: 델타가 아니라 0/1 상태 신호).
+    gripper는 통과시킨다. LeRobot 0.4.x SO-101 팔로워는 그리퍼를 0~100(RANGE_0_100)으로
+    정규화해서 녹화한다 (모터 로우값 1000~4000이 아님). 실로봇(민제씨) 캘리브 값으로의
+    변환은 추론 출력 단계에서 별도로 한다 (7번째 채널 규약은 팀 회의에서 결정 예정).
     """
     eef_poses = joint_traj_to_eef_pose_traj(kin, joint_traj_deg)
-    deltas = eef_pose_traj_to_delta_traj(eef_poses)
+    deltas = eef_pose_traj_to_delta_traj(eef_poses, anchor_pose=anchor_pose)
     return np.concatenate([deltas, gripper_signal.reshape(-1, 1)], axis=1)
