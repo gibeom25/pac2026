@@ -13,6 +13,8 @@ uv pip install "lerobot[kinematics,feetech,intelrealsense]==0.4.4"
 uv pip install "cmeel-urdfdom>=4,<5" "cmeel-tinyxml2>=10,<11"
 # seam_cv 의존성 (lerobot 기본 설치에 없음)
 uv pip install "scipy>=1.11" "scikit-image>=0.22"
+# RL (MuJoCo 환경, 2026-09-22 기범 선배님 전환)
+uv pip install "mujoco>=3.1" "gymnasium>=0.29"
 ```
 
 검증된 버전: lerobot 0.4.4, placo 0.9.16, pin 3.4.0, cmeel-urdfdom 4.0.1, cmeel-tinyxml2 10.0.0, torch 2.10.0+cu128.
