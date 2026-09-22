@@ -57,9 +57,11 @@ class SeamGrooveDetector:
         gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
         block = self.cfg.adaptive_block_size | 1  # 홀수 강제
         thresh_type = cv2.THRESH_BINARY_INV if self.cfg.invert else cv2.THRESH_BINARY
-        binary = cv2.adaptiveThreshold(
-            gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, thresh_type, block, self.cfg.adaptive_c
-        )
+        # OpenCV: T = 지역평균 − C.  INV(어두운 선): src ≤ T 를 전경으로 → C>0 이면 "평균보다 C 만큼 어두운 것".
+        # BINARY(밝은 선): src > T 를 전경으로 → 같은 C>0 이면 배경까지 전부 전경이 된다.
+        # 밝은 선은 "평균보다 C 만큼 밝은 것"이어야 하므로 부호를 뒤집는다 (2026-09-21 seam_preview 로 발견).
+        c = self.cfg.adaptive_c if self.cfg.invert else -self.cfg.adaptive_c
+        binary = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, thresh_type, block, c)
         k = self.cfg.morph_kernel
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
         binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel)

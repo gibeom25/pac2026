@@ -61,3 +61,17 @@ PYTHONPATH=. python ai_layer/control_bridge/ai_node.py --checkpoint outputs/bc_a
 
 옵션: `--anchor obs|commit`(기본 commit = L1), `--eef-mode off|on|gripper_threshold|from_channel`(회의 전 기본 off),
 `--policy-id 1`(seam-welding), `--n-steps N`(청크 앞부분만), `--min-period 초`.
+
+## 로봇 오는 날 준비물 (2026-09-21)
+
+| 파일 | 용도 |
+|---|---|
+| `RECORD_DAY.md` | 당일 체크리스트 (연결 → 녹화 → 점검 → 학습 → 제어 연결) |
+| `record_so101.sh` | `lerobot-record` 명령 템플릿. 포트/카메라 시리얼만 채우면 됨. fps 30, 카메라 이름 wrist, 320×240 고정 |
+| `check_dataset.py` | 녹화 직후 점검: fps, 관절 순서, 이미지 키, 단위(deg/0~100), timestamp, 증분 크기 vs 제어 한계, 선 인식률 |
+| `seam_preview.py` | 휴대폰 사진으로 선 인식 미리 튜닝. `--no-invert` = 밝은 선(분필/밝은 실리콘) |
+
+```bash
+PYTHONPATH=. python ai_layer/tools/check_dataset.py --repo-id <repo> --root <path>
+PYTHONPATH=. python ai_layer/tools/seam_preview.py photos/*.jpg --out preview/ [--no-invert]
+```
