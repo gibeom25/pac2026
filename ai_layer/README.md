@@ -29,6 +29,11 @@ ai_layer/
 
 ## 엔드투엔드 흐름
 
+⚠️ **1단계(실물 데이터 수집)는 현재 막혀있음**: SO-101 leader가 서보 버스에 전혀 응답하지 않는
+하드웨어 문제가 있어(모든 baud rate/ID 스캔, raw 시리얼 레벨까지 0바이트 응답 — USB 자체disconnect
+이벤트도 실시간 관측됨) 사용자가 별도로 하드웨어를 재설치/점검 중. 2~3단계(BC/RL 학습 코드와 시뮬레이션
+파이프라인)는 하드웨어와 무관하게 이미 동작 확인됨.
+
 ```
 1. 데이터 수집 (SO-101 leader로 티칭, 실물)
    lerobot-record --robot.type=so101_follower --robot.port=/dev/ttyACM_follower \
@@ -51,7 +56,7 @@ ai_layer/
 - ✅ `configs/so101_act_bc.py` + lerobot `ACTPolicy`: 더미 배치로 forward/inference 검증 완료.
 - ✅ `configs/so101_sac.py` + lerobot `SACPolicy`: 더미 배치로 critic/discrete_critic/actor/temperature loss·업데이트·`select_action`까지 전부 검증 완료.
 - ✅ `sim/smoke_test_so101.py`: SO-101 USD 로드 + 관절 인식 + 시뮬레이션 스텝, 사용자 터미널에서 성공 확인.
-- ⚠️ `envs/so101_seam_env.py`: IsaacLab 의존성 때문에 이 세션에서 미검증 (문법 체크만 통과). 사용자 터미널에서 최초 실행 시 디버깅 필요할 수 있음 — 특히 `DifferentialIKController` 연동, 관측 스페이스 반환 형식.
+- ✅ `envs/so101_seam_env.py` + `train_rl.py`: 사용자 터미널에서 실제 실행 성공 (env 64개 병렬, `DifferentialIKController` 연동, SAC 학습 루프, 체크포인트 저장까지 end-to-end 확인, 2026-09-21). `pac2026_isaaclab` 환경에 lerobot을 추가 설치해야 했고(`train_rl.py`가 lerobot의 `SACPolicy`를 직접 import하므로), Isaac Sim의 `pip_prebundle` 구버전 botocore가 우리 conda 패키지보다 먼저 잡히는 문제를 boto3 스텁으로 우회함 — `train_rl.py` 상단 주석 참고.
 
 ## 자산
 

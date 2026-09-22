@@ -25,8 +25,6 @@ simulation_app = app_launcher.app
 import sys
 from pathlib import Path
 
-import torch
-
 import isaaclab.sim as sim_utils
 from isaaclab.assets import Articulation
 

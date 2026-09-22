@@ -195,7 +195,7 @@ def compensate_latency(new_trajectory, current_eef_state, last_progress_idx,
 - RL 환경(`ai_layer/envs/so101_seam_env.py`)의 목표 경로는 현재 절차적 직선(ground truth)이며,
   실제 카메라+seam_cv 인식을 RL 루프에 넣는 것은 후속 작업.
 
-## 8. 구현 현황 (2026-09-20)
+## 8. 구현 현황 (2026-09-22 갱신)
 
 `ai_layer/` 폴더에 BC(ACT)·RL(SAC) 프레임워크 코드를 구현했다 (상세는 `ai_layer/README.md`).
 BC/RL 정책 자체는 lerobot(0.4.4)의 기존 `ACTPolicy`/`SACPolicy` 구현을 그대로 사용 — 이 프로젝트가
@@ -205,11 +205,17 @@ BC/RL 정책 자체는 lerobot(0.4.4)의 기존 `ACTPolicy`/`SACPolicy` 구현�
   `Sim-to-Real-SO-101-Workshop`에서 재사용)을 `assets/`에 확보.
 - Isaac Sim 4.5.0.0 + IsaacLab v2.1.0을 `pac2026_isaaclab` conda 환경에 설치, SO-101 USD 로드/시뮬레이션
   스텝까지 사용자 터미널에서 검증 완료 (`ai_layer/sim/smoke_test_so101.py`).
-- BC/RL 코드는 더미 배치로 이 세션에서 단위 검증 완료 (forward/inference, SAC의 4개 loss + target
-  network 업데이트 + `select_action`까지). `ai_layer/envs/so101_seam_env.py`(IsaacLab 환경)만
-  IsaacLab 의존성 때문에 미검증 — 사용자 터미널에서 최초 실행 검증 필요.
+- BC/RL 코드는 이 세션에서 더미 배치로 단위 검증 완료 (forward/inference, SAC의 4개 loss + target
+  network 업데이트 + `select_action`까지). **`ai_layer/envs/so101_seam_env.py` + `train_rl.py`도 사용자
+  터미널에서 실제 end-to-end 실행 성공** (SO-101 64개 병렬 시뮬레이션, DifferentialIK 연동, SAC 학습
+  루프, 체크포인트 저장까지 확인, 2026-09-21) — AI 추론 계층의 시뮬레이션 학습 파이프라인 자체는
+  하드웨어와 무관하게 전부 동작 확인된 상태.
 - ⚠️ **세션 제약**: Isaac Sim/IsaacLab 실행(헤드리스 시뮬레이션 포함)은 이 코딩 세션(Bash 도구 샌드박스)
   안에서는 CUDA P2P 검증 단계에서 멈춘다 (하드웨어/드라이버 문제 아님, 실제 터미널에서는 정상).
+- ⚠️ **SO-101 leader 하드웨어 미해결**: 서보 버스가 모든 baud rate/ID/raw 시리얼 레벨에서 무응답이고
+  실시간 USB disconnect 이벤트도 관측됨 — 소프트웨어(conda/lerobot 버전)가 원인이 아님을 여러 각도로
+  확인함(권한, pyserial 버전, conda 미사용 시스템 파이썬, Python 3.12 공식 설치 절차 전부 동일 실패).
+  사용자가 하드웨어를 별도로 재설치/점검 중 — 실물 데이터 수집(1단계)은 이게 해결돼야 재개 가능.
   따라서 GPU 시뮬레이션 실행은 항상 사용자 터미널에서 진행한다.
 
 이 항목들은 실측 데이터(t_infer 분산, 초기 BC/RL 학습 결과)가 나오는 대로 확정하고 이 문서를 갱신할 것.
