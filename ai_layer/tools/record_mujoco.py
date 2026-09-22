@@ -130,6 +130,10 @@ def _run(args: argparse.Namespace, leader, model, data, renderer, dataset, viewe
     dt = 1.0 / args.fps
     substeps = max(1, int(round(dt / model.opt.timestep)))
 
+    gripper_idx = JOINT_NAMES.index("gripper")
+    ctrl_lo, ctrl_hi = model.actuator_ctrlrange[gripper_idx]
+    print(f"[record] MuJoCo gripper ctrlrange: {np.rad2deg(ctrl_lo):.1f}~{np.rad2deg(ctrl_hi):.1f} deg")
+
     for ep in range(args.num_episodes):
         input(f"\n[record] 에피소드 {ep + 1}/{args.num_episodes} — 준비되면 Enter (Ctrl+C 종료) ")
         mujoco.mj_resetData(model, data)
@@ -165,7 +169,13 @@ def _run(args: argparse.Namespace, leader, model, data, renderer, dataset, viewe
             dataset.add_frame({**obs_frame, **action_frame, "task": args.task})
 
             if step % args.fps == 0:
-                print(f"  t={step / args.fps:.1f}s state={[round(state_deg[n], 1) for n in JOINT_NAMES]}")
+                g_target = joint_deg["gripper"]
+                g_state = state_deg["gripper"]
+                clamped = "  <- ctrlrange에 안 들어와서 clip됨!" if not (np.rad2deg(ctrl_lo) <= g_target <= np.rad2deg(ctrl_hi)) else ""
+                print(
+                    f"  t={step / args.fps:.1f}s state={[round(state_deg[n], 1) for n in JOINT_NAMES]}"
+                    f"  | gripper target={g_target:.1f} actual={g_state:.1f}{clamped}"
+                )
 
             elapsed = time.perf_counter() - loop_t0
             if elapsed < dt:
