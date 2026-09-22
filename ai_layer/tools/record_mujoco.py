@@ -126,7 +126,48 @@ def build_dataset(args: argparse.Namespace) -> LeRobotDataset:
     )
 
 
-def _run(args: argparse.Namespace, leader, model, data, renderer, dataset, viewer) -> None:
+def build_joint_remap(leader, model) -> dict[str, tuple[float, float, float, float]]:
+    """leader 캘리브레이션 각도 범위 -> MuJoCo 관절(ctrlrange) 각도 범위 선형 리매핑 테이블.
+
+    lerobot의 정규화 공식(``degrees = (raw - mid) * 360 / max_res``, 8절 FeetechMotorsBus)으로
+    leader의 실제 각도 범위를 구한 뒤 MuJoCo 쪽 범위와 짝지은 (l_lo, l_hi, m_lo, m_hi)를 반환한다.
+    그리퍼는 leader가 캘리브레이션상 대칭 범위([-57.3, 57.3]도)인 반면 MuJoCo는 비대칭
+    ([-10, 100]도)이라, 각도를 그대로 넘기면 리더를 완전히 닫아도(-57.3도) MuJoCo 쪽 절반
+    (-10도 쪽)에서 클리핑되어 그리퍼가 덜 닫힌 것처럼 보인다 — 관절별 선형 리매핑으로 고친다.
+    """
+    remap: dict[str, tuple[float, float, float, float]] = {}
+    for i, name in enumerate(JOINT_NAMES):
+        cal = leader.bus.calibration[name]
+        model_name = leader.bus.motors[name].model
+        max_res = leader.bus.model_resolution_table[model_name] - 1
+        mid = (cal.range_min + cal.range_max) / 2
+        l_lo = (cal.range_min - mid) * 360 / max_res
+        l_hi = (cal.range_max - mid) * 360 / max_res
+        m_lo, m_hi = (float(np.rad2deg(v)) for v in model.actuator_ctrlrange[i])
+        remap[name] = (l_lo, l_hi, m_lo, m_hi)
+    return remap
+
+
+def _remap_deg(leader_deg: dict[str, float], remap: dict[str, tuple[float, float, float, float]]) -> dict[str, float]:
+    """leader 각도(deg) -> MuJoCo 관절 각도(deg) 선형 변환 (범위 밖은 clip)."""
+    out = {}
+    for name, val in leader_deg.items():
+        l_lo, l_hi, m_lo, m_hi = remap[name]
+        t = (val - l_lo) / (l_hi - l_lo)
+        out[name] = float(np.clip(m_lo + t * (m_hi - m_lo), m_lo, m_hi))
+    return out
+
+
+def _run(
+    args: argparse.Namespace,
+    leader,
+    model,
+    data,
+    renderer,
+    dataset,
+    viewer,
+    joint_remap: dict[str, tuple[float, float, float, float]],
+) -> None:
     dt = 1.0 / args.fps
     substeps = max(1, int(round(dt / model.opt.timestep)))
 
@@ -144,8 +185,9 @@ def _run(args: argparse.Namespace, leader, model, data, renderer, dataset, viewe
         for step in range(n_steps):
             loop_t0 = time.perf_counter()
 
-            action = leader.get_action()  # {"shoulder_pan.pos": deg, ...}
-            joint_deg = {name: action[f"{name}.pos"] for name in JOINT_NAMES}
+            action = leader.get_action()  # {"shoulder_pan.pos": deg, ...} (leader 캘리브레이션 각도)
+            leader_deg = {name: action[f"{name}.pos"] for name in JOINT_NAMES}
+            joint_deg = _remap_deg(leader_deg, joint_remap)  # -> MuJoCo 관절 범위로 리매핑, 기록되는 action도 이 값
 
             data.ctrl[:] = np.deg2rad([joint_deg[n] for n in JOINT_NAMES])
             for _ in range(substeps):
@@ -198,15 +240,20 @@ def main() -> None:
     renderer = mujoco.Renderer(model, height=CAMERA_HW[0], width=CAMERA_HW[1])
     mujoco.mj_forward(model, data)
 
+    joint_remap = build_joint_remap(leader, model)
+    for name in JOINT_NAMES:
+        l_lo, l_hi, m_lo, m_hi = joint_remap[name]
+        print(f"[record] remap {name}: leader[{l_lo:.1f},{l_hi:.1f}] -> mujoco[{m_lo:.1f},{m_hi:.1f}] deg")
+
     dataset = build_dataset(args)
 
     try:
         if args.headless:
-            _run(args, leader, model, data, renderer, dataset, viewer=None)
+            _run(args, leader, model, data, renderer, dataset, viewer=None, joint_remap=joint_remap)
         else:
             print("[record] 뷰어 창을 띄웁니다 (--headless로 끌 수 있음).")
             with mujoco.viewer.launch_passive(model, data) as viewer:
-                _run(args, leader, model, data, renderer, dataset, viewer)
+                _run(args, leader, model, data, renderer, dataset, viewer, joint_remap=joint_remap)
     except KeyboardInterrupt:
         print("\n[record] 중단됨 — 이미 저장된 에피소드는 유지됩니다.")
     finally:
