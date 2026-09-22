@@ -26,6 +26,7 @@ import time
 from pathlib import Path
 
 import mujoco
+import mujoco.viewer
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -142,8 +143,6 @@ def main() -> None:
         if args.headless:
             _run(args, leader, model, data, renderer, dataset, viewer=None)
         else:
-            import mujoco.viewer
-
             print("[record] 뷰어 창을 띄웁니다 (--headless로 끌 수 있음).")
             with mujoco.viewer.launch_passive(model, data) as viewer:
                 _run(args, leader, model, data, renderer, dataset, viewer)
