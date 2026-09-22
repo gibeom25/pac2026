@@ -1,63 +1,26 @@
 #!/usr/bin/env python
 """RL(SAC) 학습 진입점. 설계 문서: docs/AI_추론계층_프레임워크.md 3.4절.
 
-⚠️ IsaacLab이 필요하므로 반드시 사용자 터미널에서 직접 실행할 것 (이 세션/Bash 도구 안에서는
-CUDA P2P 검증 단계에서 멈춤 — ai_layer_welding_trajectory_design.md 메모리 참고).
+2026-09-22: MuJoCo 환경으로 전환(envs/so101_seam_env.py 참고)하면서 IsaacLab(AppLauncher 등)
+의존성이 완전히 제거됨. 이제 일반 파이썬 스크립트로 어디서나(이 세션 포함) 바로 실행 가능하다.
 
 사용 예:
-  ./isaaclab.sh -p ai_layer/train_rl.py --headless --num-steps 200000
-  ./isaaclab.sh -p ai_layer/train_rl.py --headless --bc-checkpoint outputs/bc_act/act_epoch0099.pt
+  python -m ai_layer.train_rl --num-steps 200000
+  python -m ai_layer.train_rl --num-steps 200000 --bc-checkpoint outputs/bc_act/act_epoch0099.pt
 """
 
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
 
-from isaaclab.app import AppLauncher
+import torch
 
-parser = argparse.ArgumentParser(description="SO-101 seam-following SAC training.")
-parser.add_argument("--num-steps", type=int, default=200_000)
-parser.add_argument("--batch-size", type=int, default=256)
-parser.add_argument("--out-dir", default="outputs/rl_sac")
-parser.add_argument("--log-every", type=int, default=200)
-parser.add_argument("--ckpt-every", type=int, default=5000)
-parser.add_argument(
-    "--bc-checkpoint", default=None, help="train_bc.py가 만든 ACT 체크포인트 (R_imitation 항에 사용, 선택)"
-)
-AppLauncher.add_app_launcher_args(parser)
-args_cli = parser.parse_args()
+from lerobot.policies.sac.modeling_sac import SACPolicy
 
-app_launcher = AppLauncher(args_cli)
-simulation_app = app_launcher.app
-
-"""이 아래부터는 시뮬레이터 앱이 뜬 뒤에만 import 가능."""
-
-import sys  # noqa: E402
-from pathlib import Path  # noqa: E402
-
-import torch  # noqa: E402
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-
-# sys.path 재정렬(pip_prebundle을 뒤로 미는 방식)은 Kit의 동적 확장 로딩 때문에 효과가 없었다.
-# 실제 원인 체인: lerobot -> accelerate.Accelerator -> accelerate.commands.config.sagemaker ->
-# boto3 -> ... -> botocore.httpchecksum.DEFAULT_CHECKSUM_ALGORITHM (Isaac Sim이 내부적으로 끼워
-# 넣는 구버전 pip_prebundle/botocore가 우리 conda 환경의 최신 botocore보다 먼저 잡힘).
-# 이 SageMaker CLI 설정 경로는 이 프로젝트에서 전혀 쓰지 않으므로, boto3를 빈 더미 모듈로
-# sys.modules에 미리 채워 넣어 그 import 체인 자체가 실행되지 않게 한다 (경로 순서와 무관하게 확실).
-if "boto3" not in sys.modules:
-    import importlib.machinery
-    import types
-
-    _boto3_stub = types.ModuleType("boto3")
-    _boto3_stub.__spec__ = importlib.machinery.ModuleSpec("boto3", loader=None)
-    sys.modules["boto3"] = _boto3_stub
-
-from lerobot.policies.sac.modeling_sac import SACPolicy  # noqa: E402
-
-from ai_layer.configs.so101_sac import build_so101_sac_config  # noqa: E402
-from ai_layer.envs.so101_seam_env import SO101SeamEnv, SO101SeamEnvCfg  # noqa: E402
-from ai_layer.rl.replay_buffer import ReplayBuffer  # noqa: E402
+from ai_layer.configs.so101_sac import build_so101_sac_config
+from ai_layer.envs.so101_seam_env import SO101SeamEnv, SO101SeamEnvCfg
+from ai_layer.rl.replay_buffer import ReplayBuffer
 
 
 def load_bc_reference(checkpoint_path: str | None, device: str):
@@ -75,11 +38,24 @@ def load_bc_reference(checkpoint_path: str | None, device: str):
     return policy
 
 
+def parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(description="SO-101 seam-following SAC training (MuJoCo).")
+    p.add_argument("--num-steps", type=int, default=200_000)
+    p.add_argument("--batch-size", type=int, default=256)
+    p.add_argument("--out-dir", default="outputs/rl_sac")
+    p.add_argument("--log-every", type=int, default=200)
+    p.add_argument("--ckpt-every", type=int, default=5000)
+    p.add_argument(
+        "--bc-checkpoint", default=None, help="train_bc.py가 만든 ACT 체크포인트 (R_imitation 항에 사용, 선택)"
+    )
+    return p.parse_args()
+
+
 def main() -> None:
+    args_cli = parse_args()
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    env_cfg = SO101SeamEnvCfg()
-    env = SO101SeamEnv(cfg=env_cfg)
+    env = SO101SeamEnv(SO101SeamEnvCfg())
 
     sac_cfg = build_so101_sac_config()
     sac_cfg.device = device
@@ -106,17 +82,20 @@ def main() -> None:
 
     obs, _ = env.reset()
     step = 0
-    while step < args_cli.num_steps and simulation_app.is_running():
+    while step < args_cli.num_steps:
         with torch.no_grad():
             if step < sac_cfg.online_step_before_learning:
                 action = torch.rand(env.num_envs, 7, device=device) * 2 - 1
                 action[:, -1] = (action[:, -1] > 0).float()
             else:
-                action = policy.select_action(obs)
+                action = policy.select_action({k: v.to(device) for k, v in obs.items()})
 
-        next_obs, reward, terminated, truncated, _ = env.step(action)
-        done = (terminated | truncated).float()
-        buffer.push(obs, action, reward, next_obs, done)
+        next_obs, reward, terminated, truncated, _ = env.step(action.cpu())
+        if truncated or terminated:
+            next_obs, _ = env.reset()
+        done = torch.tensor([float(terminated or truncated)])
+        reward_t = torch.tensor([reward])
+        buffer.push(obs, action, reward_t, next_obs, done)
         obs = next_obs
 
         if len(buffer) >= args_cli.batch_size and step >= sac_cfg.online_step_before_learning:
@@ -159,19 +138,15 @@ def main() -> None:
             policy.update_target_networks()
 
             if step % args_cli.log_every == 0:
-                print(
-                    f"step={step} critic_loss={critic_loss.item():.4f} "
-                    f"reward_mean={reward.mean().item():.4f}"
-                )
+                print(f"step={step} critic_loss={critic_loss.item():.4f} reward={reward:.4f}")
 
         if step % args_cli.ckpt_every == 0 and step > 0:
             torch.save(policy.state_dict(), out_dir / f"sac_step{step:07d}.pt")
 
-        step += env.num_envs
+        step += 1
 
     torch.save(policy.state_dict(), out_dir / "sac_final.pt")
     print(f"done. checkpoints in {out_dir}")
-    simulation_app.close()
 
 
 if __name__ == "__main__":

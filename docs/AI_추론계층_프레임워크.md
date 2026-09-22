@@ -198,24 +198,23 @@ def compensate_latency(new_trajectory, current_eef_state, last_progress_idx,
 ## 8. 구현 현황 (2026-09-22 갱신)
 
 `ai_layer/` 폴더에 BC(ACT)·RL(SAC) 프레임워크 코드를 구현했다 (상세는 `ai_layer/README.md`).
-BC/RL 정책 자체는 lerobot(0.4.4)의 기존 `ACTPolicy`/`SACPolicy` 구현을 그대로 사용 — 이 프로젝트가
-새로 짠 것은 관측/액션 스펙, 데이터 변환(FK 기반 EEF-delta), 보상함수, 환경(IsaacLab)뿐이다.
+BC/RL 정책 자체는 lerobot의 기존 `ACTPolicy`/`SACPolicy` 구현을 그대로 사용 — 이 프로젝트가
+새로 짠 것은 관측/액션 스펙, 데이터 변환(FK/IK 기반 EEF-delta), 보상함수, 환경(MuJoCo)뿐이다.
 
-- SO-101 URDF(`TheRobotStudio/SO-ARM100`)와 IsaacLab USD 자산(NVIDIA 공식
-  `Sim-to-Real-SO-101-Workshop`에서 재사용)을 `assets/`에 확보.
-- Isaac Sim 4.5.0.0 + IsaacLab v2.1.0을 `pac2026_isaaclab` conda 환경에 설치, SO-101 USD 로드/시뮬레이션
-  스텝까지 사용자 터미널에서 검증 완료 (`ai_layer/sim/smoke_test_so101.py`).
-- BC/RL 코드는 이 세션에서 더미 배치로 단위 검증 완료 (forward/inference, SAC의 4개 loss + target
-  network 업데이트 + `select_action`까지). **`ai_layer/envs/so101_seam_env.py` + `train_rl.py`도 사용자
-  터미널에서 실제 end-to-end 실행 성공** (SO-101 64개 병렬 시뮬레이션, DifferentialIK 연동, SAC 학습
-  루프, 체크포인트 저장까지 확인, 2026-09-21) — AI 추론 계층의 시뮬레이션 학습 파이프라인 자체는
-  하드웨어와 무관하게 전부 동작 확인된 상태.
-- ⚠️ **세션 제약**: Isaac Sim/IsaacLab 실행(헤드리스 시뮬레이션 포함)은 이 코딩 세션(Bash 도구 샌드박스)
-  안에서는 CUDA P2P 검증 단계에서 멈춘다 (하드웨어/드라이버 문제 아님, 실제 터미널에서는 정상).
-- ⚠️ **SO-101 leader 하드웨어 미해결**: 서보 버스가 모든 baud rate/ID/raw 시리얼 레벨에서 무응답이고
-  실시간 USB disconnect 이벤트도 관측됨 — 소프트웨어(conda/lerobot 버전)가 원인이 아님을 여러 각도로
-  확인함(권한, pyserial 버전, conda 미사용 시스템 파이썬, Python 3.12 공식 설치 절차 전부 동일 실패).
-  사용자가 하드웨어를 별도로 재설치/점검 중 — 실물 데이터 수집(1단계)은 이게 해결돼야 재개 가능.
+- SO-101 URDF + **MJCF**(공식 `TheRobotStudio/SO-ARM100` 저장소, 실측 서보 게인 반영)를 `assets/`에 확보.
+- **RL 시뮬레이터를 IsaacLab에서 MuJoCo로 전환** (2026-09-22): 이 컴퓨터(8GB VRAM 노트북)에서 Isaac
+  Sim/Kit이 계속 불안정했고(CUDA P2P 검증 행, GPU 드라이버 이슈, 의존성 충돌 등 이번 세션에서 수십 차례
+  디버깅), SAC는 off-policy라 대규모 병렬환경이 필수가 아니며 BC가 이미 기초 정책을 제공하므로 RL은
+  국소 탐색 위주라는 판단. MuJoCo는 GPU 없이 가볍게 동작하고 **이 세션 안에서 직접 실행·검증 가능**.
+- BC/RL 코드, `envs/so101_seam_env.py`(MuJoCo), `train_rl.py` 전부 **이 세션에서 직접 실행해 검증 완료**
+  (더미 배치 forward/inference, SAC 4개 loss + target network 업데이트, 실제 SAC 학습 루프가 수백 스텝
+  동안 정상 진행되는 것까지 확인) — 더 이상 사용자 터미널에 의존하지 않고 이 세션에서 자체 검증 가능.
+- IsaacLab 관련 코드(`envs/so101_seam_env.py`의 이전 버전, `sim/smoke_test_so101.py`,
+  `assets/so101_isaac/`의 NVIDIA USD 자산)는 git 히스토리에 남겨두고 저장소에서는 제거함 — 더 이상
+  이 프로젝트에서 사용하지 않음.
+- ✅ **SO-101 leader 하드웨어 해결됨** (2026-09-22): 장시간 디버깅 끝에 원인이 **USB-시리얼 어댑터
+  보드 자체의 하드웨어 결함**으로 확인됨 (소프트웨어/전원/케이블/포트는 전부 정상이었음). 보드 교체로
+  해결, 캘리브레이션까지 완료. 실물 데이터 수집(1단계)은 이제 시작 가능.
   따라서 GPU 시뮬레이션 실행은 항상 사용자 터미널에서 진행한다.
 
 이 항목들은 실측 데이터(t_infer 분산, 초기 BC/RL 학습 결과)가 나오는 대로 확정하고 이 문서를 갱신할 것.

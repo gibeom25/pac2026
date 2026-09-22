@@ -43,6 +43,31 @@ def build_kinematics(urdf_path: Path | str = URDF_PATH) -> RobotKinematics:
     )
 
 
+def build_arm_kinematics(urdf_path: Path | str = URDF_PATH) -> RobotKinematics:
+    """IK 전용: 그리퍼(6번째 관절)를 제외한 5개 팔 관절만 풀이 대상으로 삼는다.
+
+    그리퍼는 EE 위치에 영향을 주지 않는 독립 DOF라 IK에 섞으면 솔버가 임의로 움직일 수 있어
+    분리한다 — RL env에서 그리퍼는 discrete action으로 별도 제어 (so101_seam_env.py 참고).
+    """
+    return RobotKinematics(
+        urdf_path=str(urdf_path),
+        target_frame_name="gripper_frame_link",
+        joint_names=JOINT_NAMES[:5],
+    )
+
+
+def apply_pose_delta(T: np.ndarray, delta_pos: np.ndarray, delta_rotvec: np.ndarray) -> np.ndarray:
+    """현재 pose(4x4)에 world-frame 기준 위치/회전 delta를 적용한 목표 pose(4x4)를 반환.
+
+    RL env의 EEF-delta 액션(dx,dy,dz,drx,dry,drz)을 IK 목표로 변환할 때 사용.
+    """
+    T_new = T.copy()
+    T_new[:3, 3] = T[:3, 3] + delta_pos
+    delta_R = Rotation.from_rotvec(delta_rotvec).as_matrix()
+    T_new[:3, :3] = delta_R @ T[:3, :3]
+    return T_new
+
+
 def pose_to_xyzrotvec(T: np.ndarray) -> np.ndarray:
     """4x4 변환행렬 -> [x, y, z, rx, ry, rz] (rotation vector, world frame 기준)."""
     pos = T[:3, 3]
