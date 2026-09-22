@@ -77,3 +77,12 @@ PYTHONPATH=. python ai_layer/control_bridge/ai_node.py --checkpoint outputs/bc_a
 PYTHONPATH=. python ai_layer/tools/check_dataset.py --repo-id <repo> --root <path>
 PYTHONPATH=. python ai_layer/tools/seam_preview.py photos/*.jpg --out preview/ [--no-invert]
 ```
+
+## rl_env_smoke.py — MuJoCo RL 환경 스모크 (2026-09-22)
+
+```bash
+PYTHONPATH=. /home/dy/pac2026/env_lerobot/bin/python ai_layer/tools/rl_env_smoke.py [--bc-checkpoint outputs/bc_act/last]
+```
+
+home 자세, 2초 드리프트, 경로 영역 안 이동/회전 추종(정지 후 ±1 cm/±0.03 rad), BC teacher 보상, 도달 한계 경고. 통과 기준은
+경로 영역(x 0.15~0.35, z 0.05~0.10) 안이다. x 0.45 같은 한계 근처 목표는 5DOF 팔이 물리적으로 못 가므로 검사하지 않는다.
