@@ -54,6 +54,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--episode-seconds", type=float, default=15.0)
     p.add_argument("--task", default="weld seam following demo (mujoco mirror)")
     p.add_argument("--headless", action="store_true", help="라이브 뷰어 창 없이 실행 (기본: 창 띄움)")
+    p.add_argument(
+        "--gripper-invert",
+        action="store_true",
+        help="그리퍼 열림/닫힘 방향이 반대로 매핑되면 켠다 (leader 0=열림/100=닫힘인 개체용, 기본: 0=닫힘/100=열림)",
+    )
     return p.parse_args()
 
 
@@ -126,24 +131,34 @@ def build_dataset(args: argparse.Namespace) -> LeRobotDataset:
     )
 
 
-def build_joint_remap(leader, model) -> dict[str, tuple[float, float, float, float]]:
-    """leader 캘리브레이션 각도 범위 -> MuJoCo 관절(ctrlrange) 각도 범위 선형 리매핑 테이블.
+def build_joint_remap(leader, model, gripper_invert: bool = False) -> dict[str, tuple[float, float, float, float]]:
+    """leader 각도/퍼센트 범위 -> MuJoCo 관절(ctrlrange) 각도 범위 선형 리매핑 테이블.
 
-    lerobot의 정규화 공식(``degrees = (raw - mid) * 360 / max_res``, 8절 FeetechMotorsBus)으로
-    leader의 실제 각도 범위를 구한 뒤 MuJoCo 쪽 범위와 짝지은 (l_lo, l_hi, m_lo, m_hi)를 반환한다.
-    그리퍼는 leader가 캘리브레이션상 대칭 범위([-57.3, 57.3]도)인 반면 MuJoCo는 비대칭
-    ([-10, 100]도)이라, 각도를 그대로 넘기면 리더를 완전히 닫아도(-57.3도) MuJoCo 쪽 절반
-    (-10도 쪽)에서 클리핑되어 그리퍼가 덜 닫힌 것처럼 보인다 — 관절별 선형 리매핑으로 고친다.
+    관절 5개(shoulder_pan .. wrist_roll)는 lerobot의 DEGREES 정규화 공식
+    (``degrees = (raw - mid) * 360 / max_res``, FeetechMotorsBus._normalize)으로 leader의
+    실제 각도 범위를 구해 MuJoCo 쪽 범위와 짝짓는다.
+
+    그리퍼는 lerobot의 `SOLeader`(so_leader.py)에서 ``use_degrees`` 설정과 무관하게 항상
+    ``MotorNormMode.RANGE_0_100``으로 고정돼 있다 — 즉 `leader.get_action()["gripper.pos"]`는
+    처음부터 각도가 아니라 캘리브레이션된 0(한쪽 끝)~100(반대쪽 끝) 값이다. 예전에 여기서
+    DEGREES 공식(±57.3도)으로 잘못 계산해 리매핑했더니 리더를 완전히 닫아도(값 0) MuJoCo
+    관절 중간 부근(약 45도)으로 매핑되는 더 심한 오차가 생겼다 — 그리퍼는 항상 [0, 100]을
+    MuJoCo ctrlrange에 직접 선형 매핑한다. 0=닫힘/100=열림으로 가정하며(경험적으로 확인:
+    열림은 예전 raw-passthrough 코드로도 거의 맞았고 닫힘만 어긋났음) 실제로 반대면
+    ``--gripper-invert``로 뒤집는다.
     """
     remap: dict[str, tuple[float, float, float, float]] = {}
     for i, name in enumerate(JOINT_NAMES):
-        cal = leader.bus.calibration[name]
-        model_name = leader.bus.motors[name].model
-        max_res = leader.bus.model_resolution_table[model_name] - 1
-        mid = (cal.range_min + cal.range_max) / 2
-        l_lo = (cal.range_min - mid) * 360 / max_res
-        l_hi = (cal.range_max - mid) * 360 / max_res
         m_lo, m_hi = (float(np.rad2deg(v)) for v in model.actuator_ctrlrange[i])
+        if name == "gripper":
+            l_lo, l_hi = (100.0, 0.0) if gripper_invert else (0.0, 100.0)
+        else:
+            cal = leader.bus.calibration[name]
+            model_name = leader.bus.motors[name].model
+            max_res = leader.bus.model_resolution_table[model_name] - 1
+            mid = (cal.range_min + cal.range_max) / 2
+            l_lo = (cal.range_min - mid) * 360 / max_res
+            l_hi = (cal.range_max - mid) * 360 / max_res
         remap[name] = (l_lo, l_hi, m_lo, m_hi)
     return remap
 
@@ -240,7 +255,7 @@ def main() -> None:
     renderer = mujoco.Renderer(model, height=CAMERA_HW[0], width=CAMERA_HW[1])
     mujoco.mj_forward(model, data)
 
-    joint_remap = build_joint_remap(leader, model)
+    joint_remap = build_joint_remap(leader, model, gripper_invert=args.gripper_invert)
     for name in JOINT_NAMES:
         l_lo, l_hi, m_lo, m_hi = joint_remap[name]
         print(f"[record] remap {name}: leader[{l_lo:.1f},{l_hi:.1f}] -> mujoco[{m_lo:.1f},{m_hi:.1f}] deg")
