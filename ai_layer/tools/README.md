@@ -86,3 +86,20 @@ PYTHONPATH=. /home/dy/pac2026/env_lerobot/bin/python ai_layer/tools/rl_env_smoke
 
 home 자세, 2초 드리프트, 경로 영역 안 이동/회전 추종(정지 후 ±1 cm/±0.03 rad), BC teacher 보상, 도달 한계 경고. 통과 기준은
 경로 영역(x 0.15~0.35, z 0.05~0.10) 안이다. x 0.45 같은 한계 근처 목표는 5DOF 팔이 물리적으로 못 가므로 검사하지 않는다.
+
+## record_mujoco.py — SO-101 leader → MuJoCo follower 미러링 데이터 수집 (2026-09-22, 기범)
+
+실물 팔로워/카메라 없이 **leader 하나만으로** BC 학습용 LeRobotDataset을 만든다. leader가 읽은 관절각을
+MuJoCo(`assets/so101/so101_new_calib_camera.xml`, 손목 카메라 `<camera name="wrist">` 추가됨)의 팔로워에
+그대로 명령하고, 물리 스텝 후 실제 도달한 관절각(observation.state) + 렌더링된 손목 이미지 + 명령값(action)을
+기록한다. 관절공간 그대로 저장하므로 실물 `lerobot-record` 결과물과 포맷이 동일 — `train_bc.py`에 바로 사용 가능.
+
+```bash
+PYTHONPATH=. python ai_layer/tools/record_mujoco.py \
+    --leader-port /dev/ttyACM0 --leader-id my_awesome_leader_arm \
+    --repo-id <user>/so101-mujoco-demo --root ./datasets/so101-mujoco-demo \
+    --num-episodes 5 --episode-seconds 15
+```
+
+에피소드 사이 Enter로 다음 녹화 시작(리더를 시작 자세로 되돌릴 시간). 카메라 extrinsic(`wrist` 카메라의
+pos/quat)은 실측 캘리브레이션이 아니라 근사 배치 — 실물과 비교해 보정 필요.

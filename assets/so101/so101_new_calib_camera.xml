@@ -122,6 +122,9 @@
                     <!-- Part wrist_camera_so101_v1 -->
                     <geom type="mesh" class="visual" mesh="wrist_camera_so101_v1" material="wrist_camera_so101_v1_material"/>
                     <geom type="mesh" class="collision" mesh="wrist_camera_so101_v1" material="wrist_camera_so101_v1_material"/>
+                    <!-- 렌더링용 카메라 센서. 외형 메시엔 실제 카메라 태그가 없어 추가함 (2026-09-22).
+                         방향은 렌즈가 팔 앞쪽(월드 -x 방향, 그리퍼 쪽)을 보도록 근사 배치 — 실측 캘리브레이션 아님, TODO. -->
+                    <camera name="wrist" pos="0 0 0" quat="0.5 0.5 -0.5 -0.5" fovy="70"/>
                   </body>
                 </body>
                 <!-- Link moving_jaw_so101_v1 -->
