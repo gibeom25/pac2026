@@ -57,6 +57,25 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
+def _dataset_root(args: argparse.Namespace) -> Path:
+    if args.root is not None:
+        return Path(args.root)
+    from lerobot.utils.constants import HF_LEROBOT_HOME
+
+    return HF_LEROBOT_HOME / args.repo_id
+
+
+def _existing_episode_count(root: Path) -> int:
+    """meta/info.json만 로컬에서 직접 읽어 에피소드 수를 확인 (LeRobotDataset을 열지 않음 —
+    에피소드 0개인 데이터셋을 열면 tasks.parquet가 없어 lerobot이 HF Hub 조회를 시도하다 실패한다)."""
+    import json
+
+    info_path = root / "meta" / "info.json"
+    if not info_path.exists():
+        return 0
+    return json.loads(info_path.read_text()).get("total_episodes", 0)
+
+
 def build_dataset(args: argparse.Namespace) -> LeRobotDataset:
     hw_features = {name: float for name in JOINT_NAMES}
     hw_features_with_cam = {**hw_features, "wrist": CAMERA_HW}
@@ -64,6 +83,38 @@ def build_dataset(args: argparse.Namespace) -> LeRobotDataset:
     obs_features = hw_to_dataset_features(hw_features_with_cam, "observation", use_video=False)
     action_features = hw_to_dataset_features(hw_features, "action", use_video=False)
     features = {**obs_features, **action_features}
+
+    root = _dataset_root(args)
+    if root.exists():
+        n = _existing_episode_count(root)
+        if n == 0:
+            print(f"[record] 기존 데이터셋이 비어있습니다({root}, 에피소드 0개) — 지우고 새로 시작합니다.")
+            import shutil
+
+            shutil.rmtree(root)
+        else:
+            while True:
+                reply = (
+                    input(
+                        f"[record] 기존 데이터셋 발견: {root} (에피소드 {n}개)\n"
+                        f"         [o]verwrite 덮어쓰기 / [r]esume 이어서 기록 / [c]ancel 취소 ? "
+                    )
+                    .strip()
+                    .lower()
+                )
+                if reply in ("o", "overwrite"):
+                    import shutil
+
+                    shutil.rmtree(root)
+                    break
+                elif reply in ("r", "resume"):
+                    print(f"[record] 이어서 기록합니다 (기존 {n}개 에피소드 뒤에 추가).")
+                    return LeRobotDataset(repo_id=args.repo_id, root=args.root)
+                elif reply in ("c", "cancel"):
+                    print("[record] 취소했습니다.")
+                    sys.exit(1)
+                else:
+                    print("  o/r/c 중 하나를 입력해주세요.")
 
     return LeRobotDataset.create(
         repo_id=args.repo_id,
@@ -150,6 +201,9 @@ def main() -> None:
         print("\n[record] 중단됨 — 이미 저장된 에피소드는 유지됩니다.")
     finally:
         leader.disconnect()
+        # 필수: 안 부르면 parquet footer 메타데이터가 안 써져서 방금 녹화한 에피소드까지 전부
+        # 다음에 못 여는 깨진 데이터셋이 된다 (LeRobotDataset.finalize 문서 참고).
+        dataset.finalize()
 
     print(f"[record] 데이터셋: {dataset.root}")
 
