@@ -52,6 +52,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--num-episodes", type=int, default=5)
     p.add_argument("--episode-seconds", type=float, default=15.0)
     p.add_argument("--task", default="weld seam following demo (mujoco mirror)")
+    p.add_argument("--headless", action="store_true", help="라이브 뷰어 창 없이 실행 (기본: 창 띄움)")
     return p.parse_args()
 
 
@@ -73,6 +74,55 @@ def build_dataset(args: argparse.Namespace) -> LeRobotDataset:
     )
 
 
+def _run(args: argparse.Namespace, leader, model, data, renderer, dataset, viewer) -> None:
+    dt = 1.0 / args.fps
+    substeps = max(1, int(round(dt / model.opt.timestep)))
+
+    for ep in range(args.num_episodes):
+        input(f"\n[record] 에피소드 {ep + 1}/{args.num_episodes} — 준비되면 Enter (Ctrl+C 종료) ")
+        mujoco.mj_resetData(model, data)
+        mujoco.mj_forward(model, data)
+
+        t0 = time.perf_counter()
+        n_steps = int(args.episode_seconds * args.fps)
+        for step in range(n_steps):
+            loop_t0 = time.perf_counter()
+
+            action = leader.get_action()  # {"shoulder_pan.pos": deg, ...}
+            joint_deg = {name: action[f"{name}.pos"] for name in JOINT_NAMES}
+
+            data.ctrl[:] = np.deg2rad([joint_deg[n] for n in JOINT_NAMES])
+            for _ in range(substeps):
+                mujoco.mj_step(model, data)
+
+            if viewer is not None:
+                viewer.sync()
+                if not viewer.is_running():
+                    print("[record] 뷰어 창이 닫혀서 중단합니다.")
+                    return
+
+            state_deg = {name: float(np.rad2deg(data.qpos[i])) for i, name in enumerate(JOINT_NAMES)}
+
+            renderer.update_scene(data, camera=CAMERA_NAME)
+            img = renderer.render()
+
+            obs_values = {**state_deg, "wrist": img}
+            obs_frame = build_dataset_frame(dataset.features, obs_values, prefix="observation")
+            action_frame = build_dataset_frame(dataset.features, joint_deg, prefix="action")
+
+            dataset.add_frame({**obs_frame, **action_frame, "task": args.task})
+
+            if step % args.fps == 0:
+                print(f"  t={step / args.fps:.1f}s state={[round(state_deg[n], 1) for n in JOINT_NAMES]}")
+
+            elapsed = time.perf_counter() - loop_t0
+            if elapsed < dt:
+                time.sleep(dt - elapsed)
+
+        dataset.save_episode()
+        print(f"[record] 에피소드 {ep + 1} 저장 완료 ({time.perf_counter() - t0:.1f}s, {n_steps} 프레임)")
+
+
 def main() -> None:
     args = parse_args()
 
@@ -87,47 +137,16 @@ def main() -> None:
     mujoco.mj_forward(model, data)
 
     dataset = build_dataset(args)
-    dt = 1.0 / args.fps
-    substeps = max(1, int(round(dt / model.opt.timestep)))
 
     try:
-        for ep in range(args.num_episodes):
-            input(f"\n[record] 에피소드 {ep + 1}/{args.num_episodes} — 준비되면 Enter (Ctrl+C 종료) ")
-            mujoco.mj_resetData(model, data)
-            mujoco.mj_forward(model, data)
+        if args.headless:
+            _run(args, leader, model, data, renderer, dataset, viewer=None)
+        else:
+            import mujoco.viewer
 
-            t0 = time.perf_counter()
-            n_steps = int(args.episode_seconds * args.fps)
-            for step in range(n_steps):
-                loop_t0 = time.perf_counter()
-
-                action = leader.get_action()  # {"shoulder_pan.pos": deg, ...}
-                joint_deg = {name: action[f"{name}.pos"] for name in JOINT_NAMES}
-
-                data.ctrl[:] = np.deg2rad([joint_deg[n] for n in JOINT_NAMES])
-                for _ in range(substeps):
-                    mujoco.mj_step(model, data)
-
-                state_deg = {name: float(np.rad2deg(data.qpos[i])) for i, name in enumerate(JOINT_NAMES)}
-
-                renderer.update_scene(data, camera=CAMERA_NAME)
-                img = renderer.render()
-
-                obs_values = {**state_deg, "wrist": img}
-                obs_frame = build_dataset_frame(dataset.features, obs_values, prefix="observation")
-                action_frame = build_dataset_frame(dataset.features, joint_deg, prefix="action")
-
-                dataset.add_frame({**obs_frame, **action_frame, "task": args.task})
-
-                if step % args.fps == 0:
-                    print(f"  t={step / args.fps:.1f}s state={[round(state_deg[n], 1) for n in JOINT_NAMES]}")
-
-                elapsed = time.perf_counter() - loop_t0
-                if elapsed < dt:
-                    time.sleep(dt - elapsed)
-
-            dataset.save_episode()
-            print(f"[record] 에피소드 {ep + 1} 저장 완료 ({time.perf_counter() - t0:.1f}s, {n_steps} 프레임)")
+            print("[record] 뷰어 창을 띄웁니다 (--headless로 끌 수 있음).")
+            with mujoco.viewer.launch_passive(model, data) as viewer:
+                _run(args, leader, model, data, renderer, dataset, viewer)
     except KeyboardInterrupt:
         print("\n[record] 중단됨 — 이미 저장된 에피소드는 유지됩니다.")
     finally:
