@@ -7,7 +7,7 @@
 호환된다. 단, 그리퍼 채널은 예외로 항상 0.0/1.0 이진값이다 (설계문서 2절 gripper_signal[0/1] —
 그리퍼 조는 구동하지 않고 고정, MuJoCo에 붙인 LED(tool_led)로 뷰어에서 확인 가능).
 이미지는 MuJoCo 손목 카메라(`so101_new_calib_camera.xml`, `assets/so101/README` 참고)로
-렌더링한다.
+렌더링한다. 씬은 `scene_a4.xml`(위 로봇 파일 + 바닥 + 용접선 그려진 A4 용지, textures/a4_weld_seam.png)을 쓴다.
 
 실행 (pac2026 conda 환경, lerobot 설치되어 있음 — leader 통신용):
   conda activate pac2026
@@ -40,7 +40,7 @@ from lerobot.datasets.utils import build_dataset_frame, hw_to_dataset_features  
 from lerobot.teleoperators.so_leader.config_so_leader import SOLeaderTeleopConfig  # noqa: E402
 from lerobot.teleoperators.so_leader.so_leader import SOLeader  # noqa: E402
 
-MJCF_PATH = Path(__file__).resolve().parents[2] / "assets" / "so101" / "so101_new_calib_camera.xml"
+MJCF_PATH = Path(__file__).resolve().parents[2] / "assets" / "so101" / "scene_a4.xml"
 CAMERA_NAME = "wrist"
 CAMERA_HW = (240, 320, 3)
 

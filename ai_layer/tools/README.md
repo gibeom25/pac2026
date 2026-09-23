@@ -90,9 +90,14 @@ home 자세, 2초 드리프트, 경로 영역 안 이동/회전 추종(정지 �
 ## record_mujoco.py — SO-101 leader → MuJoCo follower 미러링 데이터 수집 (2026-09-22, 기범)
 
 실물 팔로워/카메라 없이 **leader 하나만으로** BC 학습용 LeRobotDataset을 만든다. leader가 읽은 관절각을
-MuJoCo(`assets/so101/so101_new_calib_camera.xml`, 손목 카메라 `<camera name="wrist">` 추가됨)의 팔로워에
-그대로 명령하고, 물리 스텝 후 실제 도달한 관절각(observation.state) + 렌더링된 손목 이미지 + 명령값(action)을
-기록한다. 관절공간 그대로 저장하므로 실물 `lerobot-record` 결과물과 포맷이 동일 — `train_bc.py`에 바로 사용 가능.
+MuJoCo(`assets/so101/scene_a4.xml` = `so101_new_calib_camera.xml`(손목 카메라 포함) + 바닥 +
+용접선이 그려진 A4 용지, `textures/a4_weld_seam.png`)의 팔로워에 그대로 명령하고, 물리 스텝 후 실제
+도달한 관절각(observation.state) + 렌더링된 손목 이미지 + 명령값(action)을 기록한다. 관절공간 그대로
+저장하므로 실물 `lerobot-record` 결과물과 포맷이 동일 — `train_bc.py`에 바로 사용 가능.
+
+A4 용지는 세계좌표 x=0.25 중심(so101_seam_env.py 경로 영역 x 0.15~0.35가 안쪽에 들어옴), 긴 축(297mm)이
+x축. 배치는 근사값 — 손목 카메라 extrinsic이 아직 근사 배치라(위 캐비어트 참고) 홈 자세에서는 카메라가
+용지를 바로 보지 않을 수 있음, 뷰어로 확인 후 필요하면 카메라/용지 위치 조정할 것.
 
 ```bash
 PYTHONPATH=. python ai_layer/tools/record_mujoco.py \
