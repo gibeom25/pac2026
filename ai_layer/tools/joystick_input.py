@@ -167,12 +167,12 @@ class JoystickEEController:
     ) -> tuple[float, float, float]:
         """(vx, vy, vz) m/s.
 
-        2026-09-23: 실사용 확인 결과 z가 뒤집혀 있어(슬라이더 밀면 내려가야 할 방향이 반대) 기본
-        부호를 반전. x/y는 실제 어느 쪽이 반대인지 애매해서(사람마다 스틱 잡는 방향 체감이 다를 수
-        있음) --invert-x/--invert-y로 바로 뒤집어 테스트할 수 있게 열어둠 — check_ee.py로
-        `target=(x,y,z)`가 스틱 방향과 맞는지 보고 필요한 쪽만 켤 것.
+        2026-09-23: 실사용 확인 결과 x/z가 뒤집혀 있어 기본 부호를 반전 (z: 슬라이더 밀면
+        내려가야 할 방향이 반대, x: 스틱 전방이 -x가 되어야 함). y는 여전히 애매할 수 있어
+        --invert-y로 바로 뒤집어 테스트할 수 있게 열어둠 — check_ee.py로 `target=(x,y,z)`가
+        스틱 방향과 맞는지 보고 필요하면 켤 것.
         """
-        vx = self.state.y * max_linear  # 스틱 전방 = +x
+        vx = -self.state.y * max_linear  # 스틱 전방 = -x로 반전
         vy = -self.state.x * max_linear  # 스틱 오른쪽 = -y
         vz = -self.state.throttle * max_linear  # 슬라이더 밀면(+) 아래로(-z) 가도록 반전
         if invert_x:
