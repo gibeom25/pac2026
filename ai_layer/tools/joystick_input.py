@@ -92,6 +92,7 @@ class JoystickEEController:
             )
         self.state = JoystickState()
         self._sync_from_device()
+        self._edge_prev: dict[int, bool] = {}  # episode_end_requested()/discard_requested() 엣지 검출용
 
     def _norm(self, code: int, raw: int) -> float:
         info = self._axis_info[code]
@@ -127,6 +128,21 @@ class JoystickEEController:
             elif code == ecodes.ABS_THROTTLE:
                 self.state.throttle = val
 
+    def _resync_from_hardware(self) -> None:
+        """SYN_DROPPED(커널 이벤트 버퍼 오버플로) 이후 실제 하드웨어 현재 상태로 강제 재동기화.
+
+        record_mujoco.py에서 에피소드 사이 input()으로 오래 블로킹하는 동안(poll()을 안 부름)
+        조이스틱이 계속 이벤트를 만들어내면 커널 버퍼가 넘칠 수 있다 — 그러면 release 이벤트가
+        유실돼 버튼이 실제로는 떼졌는데도 state.buttons에는 계속 눌린 걸로 남을 수 있다
+        (에피소드 폐기가 계속 반복되는 버그로 관측됨, 2026-09-23). active_keys()/absinfo는
+        이벤트 스트림과 무관하게 지금 이 순간의 진짜 상태를 직접 읽어오므로 이걸로 덮어쓴다.
+        """
+        self._sync_from_device()
+        active = set(self.dev.active_keys())
+        for code in list(self.state.buttons.keys()) + [ecodes.BTN_TRIGGER, ecodes.BTN_THUMB, ecodes.BTN_THUMB2]:
+            self.state.buttons[code] = code in active
+        self.state.trigger = ecodes.BTN_TRIGGER in active
+
     def poll(self) -> None:
         """대기 중인 이벤트를 전부(non-blocking) 읽어 state를 갱신한다."""
         while True:
@@ -140,6 +156,9 @@ class JoystickEEController:
             if not events:
                 return
             for e in events:
+                if e.type == ecodes.EV_SYN and e.code == ecodes.SYN_DROPPED:
+                    self._resync_from_hardware()
+                    continue
                 if e.type == ecodes.EV_ABS:
                     if e.code == ecodes.ABS_X:
                         self.state.x = self._norm(ecodes.ABS_X, e.value)
@@ -186,22 +205,35 @@ class JoystickEEController:
     def gripper_bit(self) -> float:
         return 1.0 if self.state.trigger else 0.0
 
+    def _rising_edge(self, code: int) -> bool:
+        """지금 눌려 있고 직전 확인 시점엔 안 눌려 있었을 때만 True (1회성, 뗐다 다시 눌러야 재발동).
+
+        2026-09-23: level(그냥 "지금 눌려 있나")로 체크했더니, 에피소드 사이 input()으로 오래
+        블로킹하는 동안 버튼이 눌린 채로 남아(또는 SYN_DROPPED로 release 유실) 다음 에피소드가
+        시작하자마자 계속 폐기되는 버그가 났다 — "한번 눌리고 계속 눌린 상태로 유지" 리포트.
+        엣지 검출로 바꾸면 설령 state가 눌림으로 stuck돼도 "직전에도 True"였을 테니 다시는
+        안 걸리고, 실제로 떼었다 다시 누르는 새 press만 감지한다.
+        """
+        now = bool(self.state.buttons.get(code, False))
+        was = self._edge_prev.get(code, False)
+        self._edge_prev[code] = now
+        return now and not was
+
     def episode_end_requested(self) -> bool:
-        """BTN_THUMB(엄지 버튼) 눌림 -> "이 에피소드 지금 끝내고 저장" 신호.
+        """BTN_THUMB(엄지 버튼) 눌림(엣지) -> "이 에피소드 지금 끝내고 저장" 신호.
 
         2026-09-23: --episode-seconds를 고정 길이가 아니라 상한(최대 시간)으로 바꾸면서 추가 —
         다 그렸으면 시간 다 찰 때까지 기다릴 필요 없이 버튼으로 바로 다음 에피소드로 넘어간다.
         """
-        return bool(self.state.buttons.get(ecodes.BTN_THUMB, False))
+        return self._rising_edge(ecodes.BTN_THUMB)
 
     def discard_requested(self) -> bool:
-        """BTN_THUMB2 눌림 -> "이 에피소드는 실패, 저장하지 말고 버려라" 신호.
+        """BTN_THUMB2 눌림(엣지) -> "이 에피소드는 실패, 저장하지 말고 버려라" 신호.
 
-        2026-09-23 추가 — BTN_THUMB(저장하고 종료) 바로 옆 버튼이라 엄지를 크게 안 움직이고
-        구분해서 누를 수 있다. record_mujoco.py가 이 신호를 보면 dataset.clear_episode_buffer()로
+        2026-09-23 추가. record_mujoco.py가 이 신호를 보면 dataset.clear_episode_buffer()로
         지금까지 쌓인 프레임(이미지 포함)을 버리고, 같은 에피소드 번호를 다시 시도한다.
         """
-        return bool(self.state.buttons.get(ecodes.BTN_THUMB2, False))
+        return self._rising_edge(ecodes.BTN_THUMB2)
 
     def yaw_rate(self, max_angular: float = 1.0, invert: bool = False) -> float:
         """트위스트(ABS_RZ) -> yaw 각속도 [rad/s]. mocap_target의 yaw 목표를 이 값으로 적분한다.
