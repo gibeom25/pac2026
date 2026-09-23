@@ -10,16 +10,16 @@ evdev.InputDevice.capabilities()로 직접 읽음 — 추측 아님):
   ABS_X (0~1023, center 508)       좌우 스틱 -> EE y 속도
   ABS_Y (0~1023, center 508)       전후 스틱 -> EE x 속도 (스틱 전방 = +x)
   ABS_THROTTLE (0~255, 절대위치)    슬라이더 -> EE z 속도 (자체 복원 없음 — 중앙 근처서 손 떼면 정지)
-  ABS_RZ (0~255, center ~128)      트위스트 -> 예약(회전), v1은 미사용 (ZERO_YAW 결정과 일치)
+  ABS_RZ (0~255, center ~128)      트위스트 -> yaw 각속도
   ABS_HAT0X/ABS_HAT0Y (-1/0/1)     POV 햇스위치, v1은 미사용
   BTN_TRIGGER(288)                 누르는 동안 그리퍼/도구 신호 = 1 (임계값 없이 즉시 반영)
   BTN_BASE/BTN_BASE2(294/295)      누르는 동안 roll -/+ 각속도
   BTN_BASE3/BTN_BASE4(296/297)     누르는 동안 pitch -/+ 각속도
-  BTN_BASE5/BTN_BASE6(298/299)     누르는 동안 yaw -/+ 각속도
 
-2026-09-23(2차): roll/pitch/yaw는 트위스트 대신 베이스의 6개 버튼(rotation_rate())으로 조절한다
-(레이트 컨트롤 — 누르고 있는 동안만 회전, throttle과 같은 방식). mocap_target이 위치+전체 회전을
-같이 명령하고, ee_body는 weld+접촉 반발력으로 따라간다.
+2026-09-23(2차): roll/pitch는 베이스 버튼(레이트 컨트롤 — 누르고 있는 동안만 회전, throttle과
+같은 방식)으로, yaw는 트위스트 축(연속값 — 손목을 실제로 돌리는 축이라 버튼 두 개보다 자연스러움,
+5차 변경)으로 조절한다(rotation_rate()). mocap_target이 위치+전체 회전을 같이 명령하고, ee_body는
+weld+접촉 반발력으로 따라간다.
 
 방향(좌우/전후 부호)은 실제로 스틱을 움직여보고 뷰어에서 확인해야 한다 — 반대면 부호만 뒤집을 것
 (ee_velocity()의 vx/vy 계산 부분).
@@ -243,11 +243,13 @@ class JoystickEEController:
         return self._rising_edge(ecodes.BTN_THUMB2)
 
     def rotation_rate(self, max_angular: float = 1.0) -> tuple[float, float, float]:
-        """베이스 버튼 6개(레이트 컨트롤, 누르는 동안만) -> world-frame 각속도 (wx, wy, wz) [rad/s].
+        """roll/pitch(베이스 버튼) + yaw(트위스트 축) -> world-frame 각속도 (wx, wy, wz) [rad/s].
 
-        BTN_BASE/BASE2 = roll -/+, BASE3/BASE4 = pitch -/+, BASE5/BASE6 = yaw -/+. 양쪽을 동시에
-        누르면 0(상쇄). kinematics.apply_pose_delta와 같은 world-frame 왼쪽곱 합성 규약을 쓴다 —
-        record_mujoco.py가 Rotation.from_rotvec(w*dt) @ R_cmd 로 적분한다.
+        BTN_BASE/BASE2 = roll -/+, BASE3/BASE4 = pitch -/+ (레이트 컨트롤, 누르는 동안만).
+        yaw는 2026-09-23(5차)부터 BASE5/BASE6 대신 트위스트(ABS_RZ, 연속값)로 바꿨다 —
+        "yaw는 조이스틱 회전으로 해도 될듯"(스틱 손목을 실제로 돌리는 축이라 연속 제어가
+        버튼 두 개보다 자연스러움). kinematics.apply_pose_delta와 같은 world-frame 왼쪽곱
+        합성 규약을 쓴다 — record_mujoco.py가 Rotation.from_rotvec(w*dt) @ R_cmd 로 적분한다.
         """
 
         def axis(neg_code: int, pos_code: int) -> float:
@@ -256,7 +258,7 @@ class JoystickEEController:
 
         wx = axis(ecodes.BTN_BASE, ecodes.BTN_BASE2) * max_angular
         wy = axis(ecodes.BTN_BASE3, ecodes.BTN_BASE4) * max_angular
-        wz = axis(ecodes.BTN_BASE5, ecodes.BTN_BASE6) * max_angular
+        wz = self.state.twist * max_angular
         return wx, wy, wz
 
     def close(self) -> None:
