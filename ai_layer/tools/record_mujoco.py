@@ -21,11 +21,14 @@ kinematic(물리 반응 없음)이고, 실제 물리 바디(ee_body, freejoint)�
   conda activate pac2026
   PYTHONPATH=. python ai_layer/tools/record_mujoco.py \
       --repo-id <hf-user>/so101-mujoco-demo --root ./datasets/so101-mujoco-demo \
-      --scene dashed --num-episodes 5 --episode-seconds 15
+      --scene dashed --num-episodes 5
 
 BTN_TRIGGER를 누르고 있는 동안 그리퍼/도구 신호=1, 막대가 실제로 바닥/용지에 닿아 있을 때만
-그 접촉점에 비드가 찍힌다(신호만 켜져 있고 떠 있으면 안 찍힘). 에피소드 사이에 Enter를 누르면
-다음 녹화를 시작한다. Ctrl+C로 중단하면 그때까지 저장된 에피소드는 유지된다.
+그 접촉점에 비드가 찍힌다(신호만 켜져 있고 떠 있으면 안 찍힘). 에피소드는 기본적으로 길이
+제한 없이 계속되고, **BTN_THUMB를 누르면 그 자리에서 바로 저장하고 종료** — 시간을 못 박아두고
+기다릴 필요 없이 다 그렸을 때 직접 끝낸다(원하면 --episode-seconds로 상한을 줄 수도 있음).
+끝나면 EE 위치/자세가 바로 홈으로 초기화된다. 에피소드 사이에 Enter를 누르면 다음 녹화를
+시작한다. Ctrl+C로 중단하면 그때까지 저장된 에피소드는 유지된다.
 """
 
 from __future__ import annotations
@@ -150,7 +153,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--root", default=None, help="로컬 저장 경로 (없으면 HF_LEROBOT_HOME/<repo-id>)")
     p.add_argument("--fps", type=int, default=30)
     p.add_argument("--num-episodes", type=int, default=5)
-    p.add_argument("--episode-seconds", type=float, default=15.0)
+    p.add_argument(
+        "--episode-seconds", type=float, default=None,
+        help="에피소드 길이 상한(초). 기본(안 주면)은 무제한 — BTN_THUMB를 눌러야 끝나고 다음 "
+             "에피소드로 넘어간다. 값을 주면 그 전에 BTN_THUMB를 눌러도 되고, 시간이 차면 자동 종료.",
+    )
     p.add_argument("--task", default="weld seam following demo (mujoco ee-only, joystick)")
     p.add_argument("--scene", choices=SCENE_VARIANTS, default="curve", help="A4 용접선 형태")
     p.add_argument(
@@ -261,8 +268,9 @@ def _run(args: argparse.Namespace, ctl: JoystickEEController, model, data, rende
         prev_pose: np.ndarray | None = None
 
         t0 = time.perf_counter()
-        n_steps = int(args.episode_seconds * args.fps)
-        for step in range(n_steps):
+        max_steps = int(args.episode_seconds * args.fps) if args.episode_seconds else None
+        step = 0
+        while max_steps is None or step < max_steps:
             loop_t0 = time.perf_counter()
 
             ctl.poll()
@@ -322,12 +330,29 @@ def _run(args: argparse.Namespace, ctl: JoystickEEController, model, data, rende
                     f"  | trigger={bit:.0f} 막대={touching} 비드={len(bead_points)}점"
                 )
 
+            if ctl.episode_end_requested():
+                print("\n[record] BTN_THUMB 눌림 — 에피소드 종료.")
+                step += 1
+                break
+
+            step += 1
             elapsed = time.perf_counter() - loop_t0
             if elapsed < dt:
                 time.sleep(dt - elapsed)
 
         dataset.save_episode()
-        print(f"[record] 에피소드 {ep + 1} 저장 완료 ({time.perf_counter() - t0:.1f}s, {n_steps} 프레임)")
+        print(f"[record] 에피소드 {ep + 1} 저장 완료 ({time.perf_counter() - t0:.1f}s, {step} 프레임)")
+
+        # 에피소드 끝나면 위치를 바로 초기화 — 다음 "준비되면 Enter" 대기 중에도 뷰어가 홈 자세를
+        # 보여주게 한다 (다음 에피소드 시작 때도 어차피 초기화하지만, 그건 Enter를 누른 뒤라 그
+        # 사이엔 마지막 위치에 멈춰 있던 채로 보였음).
+        mujoco.mj_resetData(model, data)
+        data.mocap_pos[mocap_idx] = MOCAP_HOME.copy()
+        data.mocap_quat[mocap_idx] = _yaw_quat(0.0)
+        mujoco.mj_forward(model, data)
+        if viewer is not None:
+            viewer.user_scn.ngeom = 0
+            viewer.sync()
 
 
 def main() -> None:

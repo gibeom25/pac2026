@@ -186,6 +186,14 @@ class JoystickEEController:
     def gripper_bit(self) -> float:
         return 1.0 if self.state.trigger else 0.0
 
+    def episode_end_requested(self) -> bool:
+        """BTN_THUMB(엄지 버튼) 눌림 -> "이 에피소드 지금 끝내고 저장" 신호.
+
+        2026-09-23: --episode-seconds를 고정 길이가 아니라 상한(최대 시간)으로 바꾸면서 추가 —
+        다 그렸으면 시간 다 찰 때까지 기다릴 필요 없이 버튼으로 바로 다음 에피소드로 넘어간다.
+        """
+        return bool(self.state.buttons.get(ecodes.BTN_THUMB, False))
+
     def yaw_rate(self, max_angular: float = 1.0, invert: bool = False) -> float:
         """트위스트(ABS_RZ) -> yaw 각속도 [rad/s]. mocap_target의 yaw 목표를 이 값으로 적분한다.
 
