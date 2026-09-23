@@ -256,8 +256,9 @@ def _run(args: argparse.Namespace, ctl: JoystickEEController, model, data, rende
     floor_gid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, FLOOR_GEOM_NAME)
     print(f"[record] EE 최대속도={args.max_linear_speed} m/s, 작업공간 x={WORKSPACE_X} y={WORKSPACE_Y} z={WORKSPACE_Z}")
 
-    for ep in range(args.num_episodes):
-        input(f"\n[record] 에피소드 {ep + 1}/{args.num_episodes} — 준비되면 Enter (Ctrl+C 종료) ")
+    saved_count = 0
+    while saved_count < args.num_episodes:
+        input(f"\n[record] 에피소드 {saved_count + 1}/{args.num_episodes} — 준비되면 Enter (Ctrl+C 종료) ")
         mujoco.mj_resetData(model, data)
         target_pos = MOCAP_HOME.copy()
         yaw = 0.0
@@ -330,8 +331,9 @@ def _run(args: argparse.Namespace, ctl: JoystickEEController, model, data, rende
                     f"  | trigger={bit:.0f} 막대={touching} 비드={len(bead_points)}점"
                 )
 
-            if ctl.episode_end_requested():
-                print("\n[record] BTN_THUMB 눌림 — 에피소드 종료.")
+            discard = ctl.discard_requested()
+            if discard or ctl.episode_end_requested():
+                print(f"\n[record] {'BTN_THUMB2 눌림 — 폐기' if discard else 'BTN_THUMB 눌림 — 종료'}.")
                 step += 1
                 break
 
@@ -339,9 +341,16 @@ def _run(args: argparse.Namespace, ctl: JoystickEEController, model, data, rende
             elapsed = time.perf_counter() - loop_t0
             if elapsed < dt:
                 time.sleep(dt - elapsed)
+        else:
+            discard = False  # while이 max_steps에 도달해서 정상 종료된 경우 (break 안 거침)
 
-        dataset.save_episode()
-        print(f"[record] 에피소드 {ep + 1} 저장 완료 ({time.perf_counter() - t0:.1f}s, {step} 프레임)")
+        if discard:
+            dataset.clear_episode_buffer()
+            print(f"[record] 에피소드 {saved_count + 1} 폐기됨 — 같은 번호로 다시 시도합니다.")
+        else:
+            dataset.save_episode()
+            saved_count += 1
+            print(f"[record] 에피소드 {saved_count} 저장 완료 ({time.perf_counter() - t0:.1f}s, {step} 프레임)")
 
         # 에피소드 끝나면 위치를 바로 초기화 — 다음 "준비되면 Enter" 대기 중에도 뷰어가 홈 자세를
         # 보여주게 한다 (다음 에피소드 시작 때도 어차피 초기화하지만, 그건 Enter를 누른 뒤라 그

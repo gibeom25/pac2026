@@ -194,6 +194,15 @@ class JoystickEEController:
         """
         return bool(self.state.buttons.get(ecodes.BTN_THUMB, False))
 
+    def discard_requested(self) -> bool:
+        """BTN_THUMB2 눌림 -> "이 에피소드는 실패, 저장하지 말고 버려라" 신호.
+
+        2026-09-23 추가 — BTN_THUMB(저장하고 종료) 바로 옆 버튼이라 엄지를 크게 안 움직이고
+        구분해서 누를 수 있다. record_mujoco.py가 이 신호를 보면 dataset.clear_episode_buffer()로
+        지금까지 쌓인 프레임(이미지 포함)을 버리고, 같은 에피소드 번호를 다시 시도한다.
+        """
+        return bool(self.state.buttons.get(ecodes.BTN_THUMB2, False))
+
     def yaw_rate(self, max_angular: float = 1.0, invert: bool = False) -> float:
         """트위스트(ABS_RZ) -> yaw 각속도 [rad/s]. mocap_target의 yaw 목표를 이 값으로 적분한다.
 
@@ -217,10 +226,11 @@ def _live_diagnostic() -> None:
             ctl.poll()
             s = ctl.state
             vx, vy, vz = ctl.ee_velocity()
+            pressed = [ecodes.BTN.get(code, str(code)) for code, down in s.buttons.items() if down]
             print(
                 f"\rx={s.x:+.2f} y={s.y:+.2f} throttle={s.throttle:+.2f} twist={s.twist:+.2f} "
                 f"hat=({s.hat_x:+d},{s.hat_y:+d}) trigger={int(s.trigger)}  |  "
-                f"v=({vx:+.3f},{vy:+.3f},{vz:+.3f}) m/s",
+                f"v=({vx:+.3f},{vy:+.3f},{vz:+.3f}) m/s  |  buttons={pressed}" + " " * 20,
                 end="",
                 flush=True,
             )
