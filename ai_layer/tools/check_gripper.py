@@ -59,7 +59,7 @@ def _run(leader, model, data, viewer, remap: dict, gripper_invert: bool, hz: flo
     dt = 1.0 / hz
     substeps = max(1, int(round(dt / model.opt.timestep)))
     gripper_idx = JOINT_NAMES.index("gripper")
-    gripper_fixed_rad = float(np.mean(model.actuator_ctrlrange[gripper_idx]))
+    gripper_fixed_rad = float(model.actuator_ctrlrange[gripper_idx][0])  # ctrlrange 하한 = 닫힘
     led_gid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, LED_GEOM_NAME)
     print_every = max(1, int(hz // 5))
 

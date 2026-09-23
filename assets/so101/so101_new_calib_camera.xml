@@ -113,10 +113,13 @@
                 <!-- 2026-09-23: 그리퍼(움직이는 조) 대신 5cm 고정 막대 + LED로 0/1 신호 테스트.
                      실제로는 그리퍼/펌프 신호(설계문서 2절 gripper_signal[0/1])를 이진 트리거로만 쓸
                      예정이라, moving_jaw는 더 이상 구동하지 않고 gripper 바디에 고정 막대를 붙인다.
-                     gripperframe site 좌표계를 그대로 재사용 — 방향은 근사 배치, 실물/뷰어로 확인 필요. -->
-                <body name="tool_mount" pos="-0.0079 -0.000218121 -0.0981274" quat="0.707107 -0 0.707107 -2.37788e-17">
-                  <geom name="tool_rod" class="visual" type="cylinder" size="0.004 0.025" pos="0 0 0.025" rgba="0.55 0.55 0.55 1"/>
-                  <geom name="tool_led" class="visual" type="sphere" size="0.007" pos="0 0 0.05" rgba="0.3 0.05 0.05 1"/>
+                     방향은 MuJoCo FK로 직접 계산해 확인: gripperframe site의 gripper-바디-로컬 오프셋이
+                     거의 전부 로컬 -z(-0.098m)라 -z가 손끝(EE가 바라보는/뻗는) 방향이 맞다(회전은 identity,
+                     site 자체의 90도 회전 프레임은 쓰지 않음). tool_mount를 그 site 근처(-z 0.098m)에 두고
+                     거기서 5cm 더 -z로 연장해 조 매시 바깥으로 확실히 튀어나오게 한다. -->
+                <body name="tool_mount" pos="0 0 -0.098" quat="1 0 0 0">
+                  <geom name="tool_rod" class="visual" type="cylinder" size="0.004 0.025" pos="0 0 -0.025" rgba="0.55 0.55 0.55 1"/>
+                  <geom name="tool_led" class="visual" type="sphere" size="0.007" pos="0 0 -0.05" rgba="0.3 0.05 0.05 1"/>
                 </body>
                 <!-- Link wrist_camera_mount (Hex-Nut Recess, 32x32 UVC module form factor) -->
                 <body name="wrist_camera_mount" pos="-0.0150 0.0240 -0.0315" quat="0.4997981226682881 -0.5001999599912927 0.4998017973423795 -0.5001999599912927">

@@ -68,7 +68,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--gripper-invert",
         action="store_true",
-        help="leader raw>=50을 0으로, <50을 1로 뒤집는다 (기본: raw>=50 -> 1/켜짐, <50 -> 0/꺼짐)",
+        help="닫힘/열림 판정을 뒤집는다 (기본: raw<50 -> 닫힘=1/켜짐(LED), raw>=50 -> 열림=0/꺼짐)",
     )
     return p.parse_args()
 
@@ -182,11 +182,15 @@ def _remap_deg(leader_deg: dict[str, float], remap: dict[str, tuple[float, float
 
 
 def gripper_bit(raw: float, invert: bool = False) -> float:
-    """leader raw gripper.pos(0~100, RANGE_0_100) -> 이진 신호(0.0/1.0). raw>=임계값 -> 1(켜짐)."""
-    on = raw >= GRIPPER_RAW_THRESHOLD
+    """leader raw gripper.pos(0~100, RANGE_0_100) -> 이진 신호(0.0/1.0).
+
+    leader 기준 raw가 작을수록(0에 가까울수록) 닫힘(build_joint_remap의 예전 각도 리매핑 시절부터
+    확인된 캘리브레이션 관례) -> raw<임계값이면 닫힘=1. --gripper-invert로 뒤집을 수 있다.
+    """
+    closed = raw < GRIPPER_RAW_THRESHOLD
     if invert:
-        on = not on
-    return 1.0 if on else 0.0
+        closed = not closed
+    return 1.0 if closed else 0.0
 
 
 def _run(
@@ -203,7 +207,7 @@ def _run(
     substeps = max(1, int(round(dt / model.opt.timestep)))
 
     gripper_idx = JOINT_NAMES.index("gripper")
-    gripper_fixed_rad = float(np.mean(model.actuator_ctrlrange[gripper_idx]))  # 조는 항상 이 값 고정, 구동 안 함
+    gripper_fixed_rad = float(model.actuator_ctrlrange[gripper_idx][0])  # ctrlrange 하한 = 닫힘, 항상 이 값 고정
     led_gid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, LED_GEOM_NAME)
     print(f"[record] gripper: 조 구동 안 함 (고정 {np.rad2deg(gripper_fixed_rad):.1f}deg), 신호는 0/1 이진 (LED로 표시)")
 
