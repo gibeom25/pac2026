@@ -242,7 +242,9 @@ class JoystickEEController:
         """
         return self._rising_edge(ecodes.BTN_THUMB2)
 
-    def rotation_rate(self, max_angular: float = 1.0) -> tuple[float, float, float]:
+    def rotation_rate(
+        self, max_angular: float = 1.0, invert_x: bool = False, invert_y: bool = False, invert_z: bool = False
+    ) -> tuple[float, float, float]:
         """roll/pitch(베이스 버튼) + yaw(트위스트 축) -> world-frame 각속도 (wx, wy, wz) [rad/s].
 
         BTN_BASE/BASE2 = roll -/+, BASE3/BASE4 = pitch -/+ (레이트 컨트롤, 누르는 동안만).
@@ -250,6 +252,9 @@ class JoystickEEController:
         "yaw는 조이스틱 회전으로 해도 될듯"(스틱 손목을 실제로 돌리는 축이라 연속 제어가
         버튼 두 개보다 자연스러움). kinematics.apply_pose_delta와 같은 world-frame 왼쪽곱
         합성 규약을 쓴다 — record_mujoco.py가 Rotation.from_rotvec(w*dt) @ R_cmd 로 적분한다.
+
+        2026-09-23: 실사용 확인 결과 yaw(트위스트) 기본 부호가 반대라 반전. roll/pitch는 아직
+        애매할 수 있어 --invert-x/--invert-y로 열어둠(ee_velocity()의 invert_x/y와는 별개 인자).
         """
 
         def axis(neg_code: int, pos_code: int) -> float:
@@ -258,7 +263,13 @@ class JoystickEEController:
 
         wx = axis(ecodes.BTN_BASE, ecodes.BTN_BASE2) * max_angular
         wy = axis(ecodes.BTN_BASE3, ecodes.BTN_BASE4) * max_angular
-        wz = self.state.twist * max_angular
+        wz = -self.state.twist * max_angular  # 기본 부호 반전 확인됨
+        if invert_x:
+            wx = -wx
+        if invert_y:
+            wy = -wy
+        if invert_z:
+            wz = -wz
         return wx, wy, wz
 
     def close(self) -> None:

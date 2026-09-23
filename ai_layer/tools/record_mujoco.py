@@ -225,6 +225,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--invert-x", action="store_true", help="EE x축 방향 반전")
     p.add_argument("--invert-y", action="store_true", help="EE y축 방향 반전")
     p.add_argument("--invert-z", action="store_true", help="EE z축 방향 반전")
+    p.add_argument("--invert-roll", action="store_true", help="roll 방향 반전")
+    p.add_argument("--invert-pitch", action="store_true", help="pitch 방향 반전")
     return p.parse_args()
 
 
@@ -341,7 +343,9 @@ def _run(args: argparse.Namespace, ctl: JoystickEEController, model, data, rende
             target_pos[2] = float(np.clip(target_pos[2], *WORKSPACE_Z))
             data.mocap_pos[mocap_idx] = target_pos
 
-            wx, wy, wz = ctl.rotation_rate(max_angular=args.max_angular_speed)
+            wx, wy, wz = ctl.rotation_rate(
+                max_angular=args.max_angular_speed, invert_x=args.invert_roll, invert_y=args.invert_pitch
+            )
             if wx or wy or wz:
                 R_cmd = Rotation.from_rotvec(np.array([wx, wy, wz]) * dt).as_matrix() @ R_cmd
             data.mocap_quat[mocap_idx] = _rotmat_to_mujoco_quat(R_cmd)
@@ -350,15 +354,17 @@ def _run(args: argparse.Namespace, ctl: JoystickEEController, model, data, rende
             for _ in range(substeps):
                 mujoco.mj_step(model, data)
 
+            tip = _rod_tip_world(data, rod_gid)
             contact_pos = _contact_pos(data, rod_gid, floor_gid)
             if contact_pos is not None:
                 floor_touched = True  # 표면에 닿음 = 실패 조건 (아래서 폐기 처리)
             if bit and step % BEAD_STRIDE == 0:
-                bead_points.append(BeadDrop(_rod_tip_world(data, rod_gid)))  # 막대 끝에서 생성, 이후 자유낙하
+                bead_points.append(BeadDrop(tip.copy()))  # 막대 끝에서 생성, 이후 자유낙하
             for b in bead_points:
                 b.step(dt)
 
             if viewer is not None:
+                viewer.cam.lookat[:] = tip  # 뷰어 시점이 도구 끝을 계속 따라가게(azimuth/거리는 마우스로 자유 조작 가능)
                 viewer.user_scn.ngeom = 0
                 _draw_bead_trail(viewer.user_scn, bead_points)
                 viewer.sync()
