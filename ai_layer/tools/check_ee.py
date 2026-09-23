@@ -37,9 +37,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from ai_layer.tools.joystick_input import JoystickEEController  # noqa: E402
 from ai_layer.tools.record_mujoco import (  # noqa: E402
     BEAD_STRIDE,
-    EE_BODY_NAME,
     FLOOR_GEOM_NAME,
-    FLOOR_Z,
     IDENTITY_QUAT,
     MAX_ANGULAR_SPEED_DEFAULT,
     MOCAP_BODY_NAME,
@@ -50,10 +48,12 @@ from ai_layer.tools.record_mujoco import (  # noqa: E402
     WORKSPACE_X,
     WORKSPACE_Y,
     WORKSPACE_Z,
+    BeadDrop,
     Rotation,
     _contact_pos,
     _draw_bead_trail,
     _mjcf_path,
+    _rod_tip_world,
     _rotmat_to_mujoco_quat,
 )
 
@@ -89,7 +89,6 @@ def _run(
 
     mocap_bid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, MOCAP_BODY_NAME)
     mocap_idx = model.body_mocapid[mocap_bid]
-    ee_bid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, EE_BODY_NAME)
     rod_gid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, ROD_GEOM_NAME)
     floor_gid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, FLOOR_GEOM_NAME)
 
@@ -98,7 +97,7 @@ def _run(
     data.mocap_pos[mocap_idx] = target_pos
     data.mocap_quat[mocap_idx] = IDENTITY_QUAT
     print_every = max(1, int(hz // 5))
-    bead_points: list[np.ndarray] = []
+    bead_points: list[BeadDrop] = []
 
     step = 0
     while True:
@@ -126,8 +125,9 @@ def _run(
         contact_pos = _contact_pos(data, rod_gid, floor_gid)
         failed = contact_pos is not None
         if bit and step % BEAD_STRIDE == 0:
-            tip = data.geom_xpos[rod_gid]
-            bead_points.append(np.array([tip[0], tip[1], FLOOR_Z]))
+            bead_points.append(BeadDrop(_rod_tip_world(data, rod_gid)))
+        for b in bead_points:
+            b.step(dt)
 
         if viewer is not None:
             viewer.user_scn.ngeom = 0
@@ -139,10 +139,10 @@ def _run(
 
         if step % print_every == 0:
             status = "실패(접촉!)" if failed else "정상(안 닿음)"
-            ee_pos = data.xpos[ee_bid]
+            tip = _rod_tip_world(data, rod_gid)  # record_mujoco.py가 기록하는 것과 같은 기준점(도구 끝)
             print(
                 f"\rtarget=({target_pos[0]:.3f},{target_pos[1]:.3f},{target_pos[2]:.3f})  "
-                f"ee=({ee_pos[0]:.3f},{ee_pos[1]:.3f},{ee_pos[2]:.3f})  "
+                f"tip=({tip[0]:.3f},{tip[1]:.3f},{tip[2]:.3f})  "
                 f"trigger={int(bit)}  막대={status}  비드={len(bead_points)}점",
                 end="",
                 flush=True,

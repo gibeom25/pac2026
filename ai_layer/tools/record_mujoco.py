@@ -91,13 +91,15 @@ MOCAP_HOME = np.array([0.25, 0.0, 0.15])
 IDENTITY_QUAT = np.array([1.0, 0.0, 0.0, 0.0])
 MAX_ANGULAR_SPEED_DEFAULT = 1.0  # rad/s, 베이스 버튼 레이트 컨트롤 기본 최대 각속도
 
-# 2026-09-23(3차): 신호(BTN_TRIGGER) on인 동안 비드를 찍는다 — 더 이상 접촉 여부/높이와 무관.
-# "실리콘이 중력의 영향을 받는다"를 진짜 유체 시뮬레이션 없이 단순화: 비드는 도구 끝이 아니라
-# 그 바로 아래 바닥/용지 면(FLOOR_Z, 수직 낙하만 가정)에 찍힌다 — 도구가 표면에서 떨어져 있어도
-# (오히려 이제는 떨어져 있어야 함, 닿으면 실패) 흘러내린 재료는 바닥에 떨어진다는 뜻.
-# 렌더된 손목 카메라 이미지에도 남아서(뷰어 전용이 아님) BC가 이미 도포된 구간을 시각적으로
-# 구분할 수 있다. mjv_initGeom으로 씬에 시각 전용 geom을 얹는 방식이라 이 자국 자체는 물리에
-# 영향 없다 (mujoco.Renderer.scene / viewer.user_scn 둘 다 지원).
+# 2026-09-23(4차): 신호(BTN_TRIGGER) on인 동안 매 스텝 비드를 "찍는다" — 더 이상 접촉 여부와
+# 무관(접촉은 이제 실패 조건). 처음엔 도구 끝 위치를 바로 바닥 높이로 스냅했는데("중력을 단순화"),
+# "점이 찍히는 위치는 봉의 끝지점이어야 하고 중력에 의해 떨어지는 걸 구현해야 한다"는 피드백으로
+# 수정 — 이제 각 비드는 실제 막대 끝(rod tip) 위치에서 생성돼 자유낙하(BeadDrop, xy 고정·z만
+# 중력가속도로 적분)하다가 바닥(FLOOR_Z)에 닿으면 멈춘다. 진짜 유체/강체 시뮬레이션은 아니고
+# (MuJoCo 물리 바디가 아니라 매 프레임 Python에서 직접 적분하는 시각 전용 점) 순수 수직 낙하만
+# 가정한 단순화. 렌더된 손목 카메라 이미지에도 남아서(뷰어 전용이 아님) BC가 이미 도포된 구간을
+# 시각적으로 구분할 수 있다. mjv_initGeom으로 씬에 시각 전용 geom을 얹는 방식이라 이 자국 자체는
+# MuJoCo 물리에는 전혀 영향 없다 (mujoco.Renderer.scene / viewer.user_scn 둘 다 지원).
 # 실리콘 느낌: 살짝 반투명한 미색 + 무광에 가까운 낮은 광택(진짜 광택 플라스틱처럼 반짝이지 않게
 # specular/shininess를 낮게, reflectance는 거의 0으로 — mjvGeom은 material 없이도 이 필드들을
 # geom 단위로 직접 지원한다(mjv_initGeom이 채우는 기본 필드 외에 아래서 수동으로 덮어씀).
@@ -107,7 +109,36 @@ BEAD_SHININESS = 0.15
 BEAD_REFLECTANCE = 0.05
 BEAD_RADIUS = 0.0018  # 1.8mm — 촘촘한 간격과 겹쳐 매끈하게 이어진 비드처럼 보이게 살짝 키움
 BEAD_STRIDE = 1  # 매 스텝 찍음 — 점 간격이 구슬 반지름보다 촘촘해져 거의 이어진 선처럼 보임
-FLOOR_Z = BEAD_RADIUS  # 바닥(world z=0) 위에 비드 구슬이 파묻히지 않고 얹혀 보이는 높이
+FLOOR_Z = BEAD_RADIUS  # 바닥(world z=0) 위에 비드 구슬이 파묻히지 않고 얹혀 보이는 높이(낙하 종착점)
+GRAVITY_MPS2 = 9.8
+ROD_HALF_LENGTH = 0.025  # ee_rig.xml의 tool_rod size 두 번째 값과 맞춤 (5cm 막대의 절반)
+
+
+class BeadDrop:
+    """비드 한 방울 — 생성 시 막대 끝 위치에서 자유낙하를 시작해 바닥에 닿으면 정지한다."""
+
+    __slots__ = ("pos", "vel_z", "settled")
+
+    def __init__(self, pos: np.ndarray) -> None:
+        self.pos = pos.copy()
+        self.vel_z = 0.0
+        self.settled = False
+
+    def step(self, dt: float) -> None:
+        if self.settled:
+            return
+        self.vel_z -= GRAVITY_MPS2 * dt
+        self.pos[2] += self.vel_z * dt
+        if self.pos[2] <= FLOOR_Z:
+            self.pos[2] = FLOOR_Z
+            self.settled = True
+
+
+def _rod_tip_world(data, rod_gid: int) -> np.ndarray:
+    """막대(tool_rod) 끝(ee_body에서 먼 쪽) world 좌표. ee_rig.xml: geom pos=(0,0,-0.025), 로컬
+    -z로 반지름(0.025)만큼 더 연장된 지점이 끝 — so101_new_calib_camera.xml 시절과 같은 관례."""
+    R = data.geom_xmat[rod_gid].reshape(3, 3)
+    return data.geom_xpos[rod_gid] + R @ np.array([0.0, 0.0, -ROD_HALF_LENGTH])
 
 
 def _rotmat_to_mujoco_quat(R: np.ndarray) -> np.ndarray:
@@ -124,8 +155,8 @@ def _mjcf_path(scene: str, variant: int = 0) -> Path:
     return ASSETS_DIR / name
 
 
-def _draw_bead_trail(scene, points: list[np.ndarray]) -> None:
-    """축적된 비드 자국(world xyz 리스트)을 시각 전용 geom으로 씬에 얹는다.
+def _draw_bead_trail(scene, beads: list[BeadDrop]) -> None:
+    """축적된 비드 방울(낙하 중이거나 이미 정착한)을 시각 전용 geom으로 씬에 얹는다.
 
     scene.ngeom을 리셋하지 않고 이어서 채운다 — renderer.scene은 update_scene() 직후(이미 모델
     geom들로 ngeom이 채워진 상태) 호출하고, viewer.user_scn은 매 프레임 호출 전에 ngeom=0으로
@@ -133,11 +164,11 @@ def _draw_bead_trail(scene, points: list[np.ndarray]) -> None:
     """
     size = np.array([BEAD_RADIUS, 0.0, 0.0])
     mat = np.eye(3).flatten()
-    for p in points:
+    for b in beads:
         if scene.ngeom >= scene.maxgeom:
             break
         g = scene.geoms[scene.ngeom]
-        mujoco.mjv_initGeom(g, type=mujoco.mjtGeom.mjGEOM_SPHERE, size=size, pos=p, mat=mat, rgba=BEAD_RGBA)
+        mujoco.mjv_initGeom(g, type=mujoco.mjtGeom.mjGEOM_SPHERE, size=size, pos=b.pos, mat=mat, rgba=BEAD_RGBA)
         g.specular = BEAD_SPECULAR
         g.shininess = BEAD_SHININESS
         g.reflectance = BEAD_REFLECTANCE
@@ -153,11 +184,17 @@ def _contact_pos(data, gid_a: int, gid_b: int) -> np.ndarray | None:
     return None
 
 
-def _ee_pose_xyzrotvec(data, ee_bid: int) -> np.ndarray:
-    """ee_body의 실측 world pose(회전은 data.xmat, 별도 FK 없음) -> (6,) [xyz, rotvec]."""
+def _ee_pose_xyzrotvec(data, ee_bid: int, rod_gid: int) -> np.ndarray:
+    """도구 끝(rod tip)의 실측 world pose(회전은 data.xmat, 별도 FK 없음) -> (6,) [xyz, rotvec].
+
+    2026-09-23: 원래 ee_body 원점(=막대 뒤쪽 마운트 지점) 기준이었는데, 비드는 막대 끝
+    (_rod_tip_world)에서 찍히므로 기록되는 observation.state/action도 같은 기준(끝지점)이어야
+    일관됨 — ee_body 원점과 끝은 5cm(ROD_HALF_LENGTH*2) 차이라 무시 못 할 오차였음
+    ("위치는 다 tip position 기반으로 저장되는거지?" 확인 후 수정).
+    """
     T = np.eye(4)
     T[:3, :3] = data.xmat[ee_bid].reshape(3, 3)
-    T[:3, 3] = data.xpos[ee_bid]
+    T[:3, 3] = _rod_tip_world(data, rod_gid)
     return pose_to_xyzrotvec(T)
 
 
@@ -281,7 +318,7 @@ def _run(args: argparse.Namespace, ctl: JoystickEEController, model, data, rende
         data.mocap_pos[mocap_idx] = target_pos
         data.mocap_quat[mocap_idx] = IDENTITY_QUAT
         mujoco.mj_forward(model, data)
-        bead_points: list[np.ndarray] = []
+        bead_points: list[BeadDrop] = []
         prev_pose: np.ndarray | None = None
         floor_touched = False
 
@@ -317,8 +354,9 @@ def _run(args: argparse.Namespace, ctl: JoystickEEController, model, data, rende
             if contact_pos is not None:
                 floor_touched = True  # 표면에 닿음 = 실패 조건 (아래서 폐기 처리)
             if bit and step % BEAD_STRIDE == 0:
-                tip = data.geom_xpos[rod_gid]
-                bead_points.append(np.array([tip[0], tip[1], FLOOR_Z]))  # 중력: 도구 높이 무관, 바로 아래 바닥면에 낙하
+                bead_points.append(BeadDrop(_rod_tip_world(data, rod_gid)))  # 막대 끝에서 생성, 이후 자유낙하
+            for b in bead_points:
+                b.step(dt)
 
             if viewer is not None:
                 viewer.user_scn.ngeom = 0
@@ -328,7 +366,7 @@ def _run(args: argparse.Namespace, ctl: JoystickEEController, model, data, rende
                     print("[record] 뷰어 창이 닫혀서 중단합니다.")
                     return
 
-            pose = _ee_pose_xyzrotvec(data, ee_bid)  # (6,) [xyz, rotvec], 실측
+            pose = _ee_pose_xyzrotvec(data, ee_bid, rod_gid)  # (6,) [xyz, rotvec], 도구 끝 기준 실측
             if prev_pose is None:
                 delta6 = np.zeros(6)
             else:
