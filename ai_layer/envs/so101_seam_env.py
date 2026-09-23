@@ -90,6 +90,9 @@ class SO101SeamEnv(gym.Env):
         self._path_curvature = 0.0
         self._path_thickness = 1.0
         self._prev_progress = 0.0
+        # R_coverage(reward.py 2026-09-23 추가)용 — target_polyline 샘플点별 "한 번이라도 방문했는가"
+        # 누적 마스크. 에피소드마다 reset()에서 False로 초기화, step()마다 coverage_reward가 갱신.
+        self._coverage_mask = torch.zeros(1, PATH_NUM_POINTS, dtype=torch.bool)
         self._prev_action = np.zeros(CONTINUOUS_ACTION_DIM)
         self._weight_schedule = WeightSchedule()
         self._bc = None  # (policy, preprocessor, postprocessor)
@@ -155,14 +158,14 @@ class SO101SeamEnv(gym.Env):
         delta = first[:, :CONTINUOUS_ACTION_DIM].numpy()
         return torch.from_numpy(np.clip(delta / self._action_scale, -1.0, 1.0)).float()
 
-    def _compute_reward(self, continuous_action: np.ndarray) -> float:
+    def _compute_reward(self, continuous_action: np.ndarray, gripper_active: float) -> float:
         ee_pos = self._eef_pose()[:3, 3]
         progress_fraction = self._total_steps / float(self._total_env_steps)
         weights = self._weight_schedule.weights(progress_fraction)
 
         action_bc = self._bc_action_scaled(self._get_observations()) if self._bc is not None else None
 
-        reward_t, new_progress_t = total_reward(
+        reward_t, new_progress_t, new_coverage_mask = total_reward(
             action_rl=torch.from_numpy(continuous_action).float().unsqueeze(0),
             action_tm1=torch.from_numpy(self._prev_action).float().unsqueeze(0),
             eef_pos=torch.from_numpy(ee_pos).float().unsqueeze(0),
@@ -171,12 +174,15 @@ class SO101SeamEnv(gym.Env):
             curvature_at_progress=torch.tensor([self._path_curvature]).float(),
             thickness_at_progress=torch.tensor([self._path_thickness]).float(),
             weights=weights,
+            coverage_mask=self._coverage_mask,
+            gripper_active=torch.tensor([gripper_active]).float(),
             action_bc=action_bc,
             lambda_consistency=self._weight_schedule.lambda_consistency,
             base_speed=self.cfg.target_speed_base,
         )
         self._prev_progress = new_progress_t.item()
         self._prev_action = continuous_action.copy()
+        self._coverage_mask = new_coverage_mask
         return reward_t.item()
 
     # ---- Gymnasium API ----
@@ -192,6 +198,7 @@ class SO101SeamEnv(gym.Env):
         self._generate_procedural_path()
         self._prev_progress = 0.0
         self._prev_action = np.zeros(CONTINUOUS_ACTION_DIM)
+        self._coverage_mask = torch.zeros(1, PATH_NUM_POINTS, dtype=torch.bool)
         self._episode_step = 0
         self._q_cmd_deg = self._arm_joint_deg()
         self._T_cmd = self.arm_kin.forward_kinematics(self._q_cmd_deg)
@@ -227,7 +234,7 @@ class SO101SeamEnv(gym.Env):
         for _ in range(self.cfg.decimation):
             mujoco.mj_step(self.model, self.data)
 
-        reward = self._compute_reward(continuous)
+        reward = self._compute_reward(continuous, gripper_active=float(gripper_signal > 0.5))
         obs = self._get_observations()
 
         self._episode_step += 1
