@@ -103,3 +103,12 @@ PYTHONPATH=. python ai_layer/tools/record_mujoco.py \
 
 에피소드 사이 Enter로 다음 녹화 시작(리더를 시작 자세로 되돌릴 시간). 카메라 extrinsic(`wrist` 카메라의
 pos/quat)은 실측 캘리브레이션이 아니라 근사 배치 — 실물과 비교해 보정 필요.
+
+## bench_inference.py — 추론 지연 벤치마크 (시연 PC 비교용)
+
+```bash
+PYTHONPATH=. python ai_layer/tools/bench_inference.py --checkpoint outputs/bc_act/last   # 또는 --synthetic
+```
+
+seam/전처리/ACT forward/후처리/인코딩/끝-끝 p50·p95·max, 첫 추론 워밍업, 제어 max_age 300 ms 대비 여유를 찍는다.
+2026-09-23 A6000: 끝-끝 p50 9.3 / p95 14.6 ms. 다른 PC(5090 등)에서 같은 명령으로 재면 바로 비교된다.
