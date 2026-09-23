@@ -35,7 +35,9 @@ SEAM_FEATURE_DIM = 5
 # 회전벡터(3)는 180° 근처에서 값이 불연속으로 튀어 관측 입력으로 부적합 → 연속적인 6D 표현 사용.
 # (kinematics.pose_to_state 참고. 델타 계산은 별도로 회전행렬 기반이라 영향 없음.)
 STATE_DIM = 9
-# action: EEF-delta 6 + gripper 1. gripper는 LeRobot 녹화값(0~100, RANGE_0_100) 그대로.
+# action: EEF-delta 6 + gripper 1. gripper는 녹화 소스의 값을 그대로 둔다 — 실로봇
+# lerobot-record는 0~100(RANGE_0_100)이지만, 2026-09-23부터 그리퍼 조는 구동하지 않고
+# 설계문서 2절 gripper_signal[0/1]을 그대로 쓰기로 해서 record_mujoco.py 데이터는 이진(0/1).
 ACTION_DIM = 7
 
 # 이미지 키. lerobot-record가 만드는 키는 "observation.images.<카메라>" (images, 복수형).
