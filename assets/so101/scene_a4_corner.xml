@@ -2,7 +2,7 @@
     <!-- 2026-09-23: so101_new_calib_camera.xml(손목 카메라 포함) + 바닥 + A4 용지(용접선 텍스처).
          scene.xml(원본 so101_new_calib.xml + 바닥)과 같은 패턴, record_mujoco.py/check_gripper.py가
          쓰는 카메라 버전에 A4 용지만 추가한 버전. -->
-    <include file="so101_new_calib_camera.xml" />
+    <include file="ee_rig.xml" />
 
     <visual>
         <headlight diffuse="0.6 0.6 0.6" ambient="0.3 0.3 0.3" specular="0 0 0" />
