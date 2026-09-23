@@ -5,7 +5,8 @@
 관절공간(joint-space) 그대로 기록한다 — `train_bc.py`/`SO101BCDataset`이 기대하는 것과 동일한
 형식(observation.state/action = JOINT_NAMES 순서, degree)이라 실물 `lerobot-record` 결과물과
 호환된다. 단, 그리퍼 채널은 예외로 항상 0.0/1.0 이진값이다 (설계문서 2절 gripper_signal[0/1] —
-그리퍼 조는 구동하지 않고 고정, MuJoCo에 붙인 LED(tool_led)로 뷰어에서 확인 가능).
+그리퍼 조는 구동하지 않고 고정, 대신 손목의 얇은 막대(tool_rod)가 바닥/용지와 실제로 물리 충돌하고
+신호 on(1)이면서 접촉 중일 때만 지나간 자리에 비드 자국을 남긴다).
 이미지는 MuJoCo 손목 카메라(`so101_new_calib_camera.xml`, `assets/so101/README` 참고)로
 렌더링한다. 씬은 `scene_a4_<--scene>.xml`(로봇 파일 + 바닥 + 용접선 그려진 A4 용지, textures/
 a4_weld_seam_<--scene>.png) 중 하나를 고른다 — `--scene` 목록은 SCENE_VARIANTS 참고
@@ -54,20 +55,29 @@ def _mjcf_path(scene: str) -> Path:
 
 # 2026-09-23: 그리퍼(움직이는 조)는 더 이상 구동하지 않는다 — 설계문서 2절의 gripper_signal[0/1]을
 # 그대로 이진 트리거로 기록한다 (실제로는 그리퍼가 아니라 펌프/도구 on-off일 가능성이 큼, docs 3.4절
-# "그리퍼/펌프 신호" 참고). MJCF에 5cm 고정 막대(tool_rod) + LED(tool_led)를 붙여 뷰어에서 0/1을
-# 눈으로 확인할 수 있게 했다 (so101_new_calib_camera.xml).
+# "그리퍼/펌프 신호" 참고). MJCF에 얇은 5cm 막대(tool_rod)를 붙였다 — LED는 뺐고, 신호 on(1)이면서
+# 막대가 실제로 바닥/용지에 닿아 있을 때만(mj_contactForce 확인) 비드 자국을 남긴다.
 GRIPPER_RAW_THRESHOLD = 50.0  # leader RANGE_0_100 값 기준 이진화 임계값
-LED_GEOM_NAME = "tool_led"
-LED_ON_RGBA = (0.15, 0.95, 0.15, 1.0)
-LED_OFF_RGBA = (0.3, 0.05, 0.05, 1.0)
+ROD_GEOM_NAME = "tool_rod"
+FLOOR_GEOM_NAME = "floor"
 
-# 2026-09-23: 신호 on(bit=1) 동안 tool_led 위치에 그리스/실리콘 비드처럼 자국을 남긴다 — LED 깜빡임보다
-# "실제로 무언가를 짜고 있다"는 게 더 직관적으로 보이고, 렌더된 손목 카메라 이미지에도 남아서(뷰어 전용이
-# 아님) BC가 이미 도포된 구간을 시각적으로 구분할 수 있다. mjv_initGeom으로 씬에 시각 전용 geom을 얹는
-# 방식이라 물리에는 전혀 영향 없다 (mujoco.Renderer.scene / viewer.user_scn 둘 다 지원).
+# 2026-09-23: 신호 on(bit=1) + 막대-바닥 접촉 동안 접촉점에 그리스/실리콘 비드처럼 자국을 남긴다.
+# 렌더된 손목 카메라 이미지에도 남아서(뷰어 전용이 아님) BC가 이미 도포된 구간을 시각적으로 구분할 수
+# 있다. mjv_initGeom으로 씬에 시각 전용 geom을 얹는 방식이라 이 자국 자체는 물리에 영향 없다
+# (mujoco.Renderer.scene / viewer.user_scn 둘 다 지원). tool_rod는 floor와만 충돌하도록 전용 채널
+# bit1(contype/conaffinity=2)로 격리했다 — 로봇 자신의 collision 메시(default bit0)와는 안 부딪힌다.
 BEAD_RGBA = np.array([0.72, 0.72, 0.76, 1.0], dtype=np.float32)
-BEAD_RADIUS = 0.0025  # 2.5mm
-BEAD_STRIDE = 2  # 몇 스텝마다 한 점 찍을지 (매 스텝이면 점이 너무 촘촘해져 뭉개짐)
+BEAD_RADIUS = 0.0015  # 1.5mm (막대 반지름과 맞춤)
+BEAD_STRIDE = 4  # 몇 스텝마다 한 점 찍을지 (늘려서 점 간격을 더 넓힘)
+
+
+def _contact_pos(data, gid_a: int, gid_b: int) -> np.ndarray | None:
+    """gid_a<->gid_b 접촉이 있으면 첫 접촉점 world 좌표, 없으면 None."""
+    for i in range(data.ncon):
+        c = data.contact[i]
+        if {c.geom1, c.geom2} == {gid_a, gid_b}:
+            return c.pos.copy()
+    return None
 
 
 def _draw_bead_trail(scene, points: list[np.ndarray]) -> None:
@@ -102,7 +112,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--gripper-invert",
         action="store_true",
-        help="닫힘/열림 판정을 뒤집는다 (기본: raw<50 -> 닫힘=1/켜짐(LED), raw>=50 -> 열림=0/꺼짐)",
+        help="닫힘/열림 판정을 뒤집는다 (기본: raw<50 -> 닫힘=1(비드 기록), raw>=50 -> 열림=0)",
     )
     return p.parse_args()
 
@@ -242,8 +252,9 @@ def _run(
 
     gripper_idx = JOINT_NAMES.index("gripper")
     gripper_fixed_rad = float(model.actuator_ctrlrange[gripper_idx][0])  # ctrlrange 하한 = 닫힘, 항상 이 값 고정
-    led_gid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, LED_GEOM_NAME)
-    print(f"[record] gripper: 조 구동 안 함 (고정 {np.rad2deg(gripper_fixed_rad):.1f}deg), 신호는 0/1 이진 (LED로 표시)")
+    rod_gid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, ROD_GEOM_NAME)
+    floor_gid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, FLOOR_GEOM_NAME)
+    print(f"[record] gripper: 조 구동 안 함 (고정 {np.rad2deg(gripper_fixed_rad):.1f}deg), 신호 on(1)+바닥 접촉 시에만 비드 기록")
 
     for ep in range(args.num_episodes):
         input(f"\n[record] 에피소드 {ep + 1}/{args.num_episodes} — 준비되면 Enter (Ctrl+C 종료) ")
@@ -265,12 +276,12 @@ def _run(
             joint_deg["gripper"] = float(np.rad2deg(gripper_fixed_rad))
 
             data.ctrl[:] = np.deg2rad([joint_deg[n] for n in JOINT_NAMES])
-            model.geom_rgba[led_gid] = LED_ON_RGBA if bit else LED_OFF_RGBA
             for _ in range(substeps):
                 mujoco.mj_step(model, data)
 
-            if bit and step % BEAD_STRIDE == 0:
-                bead_points.append(data.geom_xpos[led_gid].copy())
+            contact_pos = _contact_pos(data, rod_gid, floor_gid)
+            if bit and contact_pos is not None and step % BEAD_STRIDE == 0:
+                bead_points.append(contact_pos)
 
             if viewer is not None:
                 viewer.user_scn.ngeom = 0
@@ -295,10 +306,10 @@ def _run(
             dataset.add_frame({**obs_frame, **action_frame, "task": args.task})
 
             if step % args.fps == 0:
-                led = "ON " if bit else "OFF"
+                touching = "접촉" if contact_pos is not None else "떠있음"
                 print(
                     f"  t={step / args.fps:.1f}s arm={[round(joint_deg[n], 1) for n in ARM_JOINT_NAMES]}"
-                    f"  | gripper raw={gripper_raw:5.1f} -> bit={bit:.0f} LED={led}"
+                    f"  | gripper raw={gripper_raw:5.1f} -> bit={bit:.0f} 막대={touching} 비드={len(bead_points)}점"
                 )
 
             elapsed = time.perf_counter() - loop_t0

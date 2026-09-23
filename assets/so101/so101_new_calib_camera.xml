@@ -110,16 +110,21 @@
                 <geom type="mesh" class="collision" pos="8.32667e-17 -0.000218214 0.000949706" quat="0 1 0 0" mesh="wrist_roll_follower_so101_v1" material="wrist_roll_follower_so101_v1_material"/>
                 <!-- Frame gripperframe -->
                 <site group="3" name="gripperframe" pos="-0.0079 -0.000218121 -0.0981274" quat="0.707107 -0 0.707107 -2.37788e-17"/>
-                <!-- 2026-09-23: 그리퍼(움직이는 조) 대신 5cm 고정 막대 + LED로 0/1 신호 테스트.
+                <!-- 2026-09-23: 그리퍼(움직이는 조) 대신 5cm 고정 막대로 0/1 신호(펌프/도구 트리거) 테스트.
                      실제로는 그리퍼/펌프 신호(설계문서 2절 gripper_signal[0/1])를 이진 트리거로만 쓸
                      예정이라, moving_jaw는 더 이상 구동하지 않고 gripper 바디에 고정 막대를 붙인다.
                      방향은 MuJoCo FK로 직접 계산해 확인: gripperframe site의 gripper-바디-로컬 오프셋이
                      거의 전부 로컬 -z(-0.098m)라 -z가 손끝(EE가 바라보는/뻗는) 방향이 맞다(회전은 identity,
                      site 자체의 90도 회전 프레임은 쓰지 않음). tool_mount를 그 site 근처(-z 0.098m)에 두고
-                     거기서 5cm 더 -z로 연장해 조 매시 바깥으로 확실히 튀어나오게 한다. -->
+                     거기서 5cm 더 -z로 연장해 조 매시 바깥으로 확실히 튀어나오게 한다.
+                     2026-09-23(2차): LED 제거(신호 표시는 비드 자국만으로), 막대를 더 얇게(반지름
+                     4mm->1.5mm), 바닥과 실제로 충돌하도록 contype/conaffinity 부여 — 그냥 default
+                     bit(1)을 쓰면 로봇 자신의 collision 메시(그리퍼/조 등, 전부 default contype=1
+                     conaffinity=1)와도 충돌해 조립부에서 바로 큰 접촉력이 생기므로, 전용 채널
+                     bit1(값 2)만 써서 바닥(floor, conaffinity에 bit1 추가)하고만 부딪히게 격리했다. -->
                 <body name="tool_mount" pos="0 0 -0.098" quat="1 0 0 0">
-                  <geom name="tool_rod" class="visual" type="cylinder" size="0.004 0.025" pos="0 0 -0.025" rgba="0.55 0.55 0.55 1"/>
-                  <geom name="tool_led" class="visual" type="sphere" size="0.007" pos="0 0 -0.05" rgba="0.3 0.05 0.05 1"/>
+                  <geom name="tool_rod" class="visual" type="cylinder" size="0.0015 0.025" pos="0 0 -0.025"
+                      rgba="0.55 0.55 0.55 1" contype="2" conaffinity="2" friction="0.3 0.005 0.0001"/>
                 </body>
                 <!-- Link wrist_camera_mount (Hex-Nut Recess, 32x32 UVC module form factor) -->
                 <body name="wrist_camera_mount" pos="-0.0150 0.0240 -0.0315" quat="0.4997981226682881 -0.5001999599912927 0.4998017973423795 -0.5001999599912927">
