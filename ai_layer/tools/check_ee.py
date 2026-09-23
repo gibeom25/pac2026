@@ -2,22 +2,23 @@
 """조이스틱 -> MuJoCo EE 전용 리그(ee_rig.xml) 실시간 뷰어. 방향/접촉 확인용.
 
 record_mujoco.py로 전체 녹화를 돌리지 않고, 조이스틱으로 mocap_target을 움직이면서 ee_body가
-잘 따라가는지, 막대가 바닥에 닿았을 때 비드가 찍히는지, x/y/throttle 축 방향(부호)이 기대한
-대로인지 빠르게 확인한다. 기본적으로 뷰어 창을 띄운다.
+잘 따라가는지, 막대가 바닥에 닿았을 때 비드가 찍히는지, x/y/throttle/트위스트 축 방향(부호)이
+기대한 대로인지 빠르게 확인한다. 기본적으로 뷰어 창을 띄운다.
 
 실행 (pac2026 conda 환경):
   conda activate pac2026
-  PYTHONPATH=. python ai_layer/tools/check_ee.py --scene dashed
+  PYTHONPATH=. python ai_layer/tools/check_ee.py --scene dashed --variant 2
 
 스틱을 움직여서 EE가 기대한 방향(앞/뒤=x, 좌/우=y)으로 가는지, 슬라이더로 z가 오르내리는지,
-트리거를 누르고 막대를 종이에 대면 비드가 찍히는지 확인한다. 방향이 반대면
-joystick_input.py의 ee_velocity()에서 부호만 뒤집을 것.
+트위스트로 yaw가 도는지, 트리거를 누르고 막대를 종이에 대면 비드가 찍히는지 확인한다. 방향이
+반대면 joystick_input.py의 ee_velocity()/yaw_rate()에서 부호만 뒤집을 것.
 Ctrl+C 또는 뷰어 창 닫기로 종료.
 """
 
 from __future__ import annotations
 
 import argparse
+import random
 import sys
 import time
 from pathlib import Path
@@ -30,29 +31,34 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from ai_layer.tools.joystick_input import JoystickEEController  # noqa: E402
 from ai_layer.tools.record_mujoco import (  # noqa: E402
+    BEAD_STRIDE,
     EE_BODY_NAME,
     FLOOR_GEOM_NAME,
     MOCAP_BODY_NAME,
     MOCAP_HOME,
+    N_VARIANTS,
     ROD_GEOM_NAME,
     SCENE_VARIANTS,
     WORKSPACE_X,
     WORKSPACE_Y,
     WORKSPACE_Z,
-    BEAD_STRIDE,
     _contact_pos,
     _draw_bead_trail,
     _mjcf_path,
+    _yaw_quat,
 )
 
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="조이스틱 -> MuJoCo EE 리그 실시간 뷰어 (방향/접촉 확인).")
     p.add_argument("--scene", choices=SCENE_VARIANTS, default="curve", help="A4 용접선 형태")
+    p.add_argument("--variant", type=int, default=-1, help=f"0~{N_VARIANTS - 1}, 기본(-1)은 무작위")
     p.add_argument("--max-linear-speed", type=float, default=0.05, help="조이스틱 최대 EE 속도 [m/s]")
+    p.add_argument("--max-angular-speed", type=float, default=1.0, help="트위스트 최대 yaw 각속도 [rad/s]")
     p.add_argument("--invert-x", action="store_true", help="EE x축 방향 반전")
     p.add_argument("--invert-y", action="store_true", help="EE y축 방향 반전")
     p.add_argument("--invert-z", action="store_true", help="EE z축 방향 반전")
+    p.add_argument("--invert-yaw", action="store_true", help="트위스트 yaw 방향 반전")
     p.add_argument("--hz", type=float, default=30.0, help="제어/출력 주기")
     p.add_argument("--headless", action="store_true", help="뷰어 창 없이 콘솔 출력만 (기본: 창 띄움)")
     return p.parse_args()
@@ -64,10 +70,12 @@ def _run(
     data,
     viewer,
     max_linear_speed: float,
+    max_angular_speed: float,
     hz: float,
     invert_x: bool = False,
     invert_y: bool = False,
     invert_z: bool = False,
+    invert_yaw: bool = False,
 ) -> None:
     dt = 1.0 / hz
     substeps = max(1, int(round(dt / model.opt.timestep)))
@@ -79,7 +87,9 @@ def _run(
     floor_gid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, FLOOR_GEOM_NAME)
 
     target_pos = MOCAP_HOME.copy()
+    yaw = 0.0
     data.mocap_pos[mocap_idx] = target_pos
+    data.mocap_quat[mocap_idx] = _yaw_quat(yaw)
     print_every = max(1, int(hz // 5))
     bead_points: list[np.ndarray] = []
 
@@ -96,6 +106,8 @@ def _run(
         target_pos[1] = float(np.clip(target_pos[1], *WORKSPACE_Y))
         target_pos[2] = float(np.clip(target_pos[2], *WORKSPACE_Z))
         data.mocap_pos[mocap_idx] = target_pos
+        yaw += ctl.yaw_rate(max_angular=max_angular_speed, invert=invert_yaw) * dt
+        data.mocap_quat[mocap_idx] = _yaw_quat(yaw)
         bit = ctl.gripper_bit()
 
         for _ in range(substeps):
@@ -117,7 +129,7 @@ def _run(
             touching = "접촉" if contact_pos is not None else "떠있음"
             ee_pos = data.xpos[ee_bid]
             print(
-                f"\rtarget=({target_pos[0]:.3f},{target_pos[1]:.3f},{target_pos[2]:.3f})  "
+                f"\rtarget=({target_pos[0]:.3f},{target_pos[1]:.3f},{target_pos[2]:.3f}) yaw={np.rad2deg(yaw):.0f}deg  "
                 f"ee=({ee_pos[0]:.3f},{ee_pos[1]:.3f},{ee_pos[2]:.3f})  "
                 f"trigger={int(bit)}  막대={touching}  비드={len(bead_points)}점",
                 end="",
@@ -135,21 +147,29 @@ def main() -> None:
 
     ctl = JoystickEEController()
 
-    mjcf_path = _mjcf_path(args.scene)
-    print(f"[check_ee] scene: {args.scene} ({mjcf_path.name})")
+    variant = args.variant if args.variant >= 0 else random.randint(0, N_VARIANTS - 1)
+    mjcf_path = _mjcf_path(args.scene, variant)
+    print(f"[check_ee] scene: {args.scene} variant={variant} ({mjcf_path.name})")
     model = mujoco.MjModel.from_xml_path(str(mjcf_path))
     data = mujoco.MjData(model)
     mujoco.mj_forward(model, data)
 
-    print("[check_ee] 스틱/슬라이더로 EE를 움직여보고, 트리거+막대 접촉으로 비드를 확인하세요. Ctrl+C로 종료.\n")
+    print("[check_ee] 스틱/슬라이더/트위스트로 EE를 움직여보고, 트리거+막대 접촉으로 비드를 확인하세요. Ctrl+C로 종료.\n")
 
-    invert_kwargs = dict(invert_x=args.invert_x, invert_y=args.invert_y, invert_z=args.invert_z)
+    invert_kwargs = dict(invert_x=args.invert_x, invert_y=args.invert_y, invert_z=args.invert_z, invert_yaw=args.invert_yaw)
     try:
         if args.headless:
-            _run(ctl, model, data, viewer=None, max_linear_speed=args.max_linear_speed, hz=args.hz, **invert_kwargs)
+            _run(
+                ctl, model, data, viewer=None,
+                max_linear_speed=args.max_linear_speed, max_angular_speed=args.max_angular_speed,
+                hz=args.hz, **invert_kwargs,
+            )
         else:
             with mujoco.viewer.launch_passive(model, data) as viewer:
-                _run(ctl, model, data, viewer, args.max_linear_speed, args.hz, **invert_kwargs)
+                _run(
+                    ctl, model, data, viewer,
+                    args.max_linear_speed, args.max_angular_speed, args.hz, **invert_kwargs,
+                )
     except KeyboardInterrupt:
         print("\n[check_ee] 종료.")
     finally:

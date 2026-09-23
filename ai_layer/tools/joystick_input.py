@@ -186,6 +186,17 @@ class JoystickEEController:
     def gripper_bit(self) -> float:
         return 1.0 if self.state.trigger else 0.0
 
+    def yaw_rate(self, max_angular: float = 1.0, invert: bool = False) -> float:
+        """트위스트(ABS_RZ) -> yaw 각속도 [rad/s]. mocap_target의 yaw 목표를 이 값으로 적분한다.
+
+        pitch/roll은 조이스틱으로 직접 명령하지 않는다 — mocap_target은 위치+yaw만 갖고, 실제
+        물리 바디(ee_body)가 weld로 그 뒤를 따라가다가 접촉 반발력을 받으면 자연스럽게 기운다
+        (2026-09-23 결정: "접점에 따라 알아서 회전"). 평평한 용지 위에서는 거의 항상 수직이고,
+        나중에 3D 그루브가 있는 실제 워크피스를 쓰면 접촉면 기울기 따라 자연스럽게 기울게 된다.
+        """
+        w = self.state.twist * max_angular
+        return -w if invert else w
+
     def close(self) -> None:
         self.dev.close()
 

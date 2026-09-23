@@ -31,6 +31,7 @@ BTN_TRIGGER를 누르고 있는 동안 그리퍼/도구 신호=1, 막대가 실�
 from __future__ import annotations
 
 import argparse
+import random
 import sys
 import time
 from pathlib import Path
@@ -49,6 +50,12 @@ from lerobot.datasets.utils import build_dataset_frame, hw_to_dataset_features  
 
 ASSETS_DIR = Path(__file__).resolve().parents[2] / "assets" / "so101"
 SCENE_VARIANTS = ["curve", "straight", "sharp_curve", "corner", "branch", "dashed"]
+# textures/gen_seam_textures.py --variants 기본값과 맞춤. variant 0 = 노이즈 없는 기준
+# (scene_a4_<scene>.xml), 1~N_VARIANTS-1 = 가우시안 노이즈 준 사전 생성본(scene_a4_<scene>_<i>.xml) —
+# 곡선 진폭/주기/위상, 코너 각도/위치, 분기 각도, 점선 간격, 선 굵기 등을 형태별로 흔들어둔 것.
+# 런타임에 텍스처를 바꾸려면 mjr_uploadTexture로 GPU 재업로드 + 뷰어와의 동기화가 필요해 번거로워서,
+# 오프라인에 미리 구워두고 --variant로 고르는 쪽을 택함 (2026-09-23).
+N_VARIANTS = 5
 CAMERA_NAME = "wrist"
 CAMERA_HW = (240, 320, 3)
 
@@ -85,8 +92,11 @@ BEAD_RADIUS = 0.0018  # 1.8mm — 촘촘한 간격과 겹쳐 매끈하게 이어
 BEAD_STRIDE = 1  # 매 스텝 찍음 — 점 간격이 구슬 반지름보다 촘촘해져 거의 이어진 선처럼 보임
 
 
-def _mjcf_path(scene: str) -> Path:
-    name = "scene_a4.xml" if scene == "curve" else f"scene_a4_{scene}.xml"
+def _mjcf_path(scene: str, variant: int = 0) -> Path:
+    if variant == 0:
+        name = "scene_a4.xml" if scene == "curve" else f"scene_a4_{scene}.xml"
+    else:
+        name = f"scene_a4_{scene}_{variant}.xml"
     return ASSETS_DIR / name
 
 
@@ -119,6 +129,13 @@ def _contact_pos(data, gid_a: int, gid_b: int) -> np.ndarray | None:
     return None
 
 
+def _yaw_quat(yaw: float) -> np.ndarray:
+    """world z축 기준 yaw 회전 -> MuJoCo quat [w,x,y,z]. mocap_target은 pitch/roll을 안 가짐 —
+    ee_body가 weld+접촉 반발력으로 알아서 기울고(_ee_pose_xyzrotvec으로 실측 기록), mocap은
+    조이스틱 트위스트로 명령한 yaw만 목표로 준다."""
+    return np.array([np.cos(yaw / 2), 0.0, 0.0, np.sin(yaw / 2)])
+
+
 def _ee_pose_xyzrotvec(data, ee_bid: int) -> np.ndarray:
     """ee_body의 실측 world pose(회전은 data.xmat, 별도 FK 없음) -> (6,) [xyz, rotvec]."""
     T = np.eye(4)
@@ -136,11 +153,18 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--episode-seconds", type=float, default=15.0)
     p.add_argument("--task", default="weld seam following demo (mujoco ee-only, joystick)")
     p.add_argument("--scene", choices=SCENE_VARIANTS, default="curve", help="A4 용접선 형태")
+    p.add_argument(
+        "--variant", type=int, default=-1,
+        help=f"용접선 변형(0={{노이즈 없음}}, 1~{N_VARIANTS - 1}=가우시안 노이즈 사전생성본). "
+             f"기본(-1)은 매번 무작위로 고름 — textures/gen_seam_textures.py 참고",
+    )
     p.add_argument("--headless", action="store_true", help="라이브 뷰어 창 없이 실행 (기본: 창 띄움)")
     p.add_argument("--max-linear-speed", type=float, default=0.05, help="조이스틱 최대 EE 속도 [m/s]")
+    p.add_argument("--max-angular-speed", type=float, default=1.0, help="조이스틱 트위스트 최대 yaw 각속도 [rad/s]")
     p.add_argument("--invert-x", action="store_true", help="EE x축 방향 반전")
     p.add_argument("--invert-y", action="store_true", help="EE y축 방향 반전")
     p.add_argument("--invert-z", action="store_true", help="EE z축 방향 반전")
+    p.add_argument("--invert-yaw", action="store_true", help="트위스트 yaw 방향 반전")
     return p.parse_args()
 
 
@@ -229,7 +253,9 @@ def _run(args: argparse.Namespace, ctl: JoystickEEController, model, data, rende
         input(f"\n[record] 에피소드 {ep + 1}/{args.num_episodes} — 준비되면 Enter (Ctrl+C 종료) ")
         mujoco.mj_resetData(model, data)
         target_pos = MOCAP_HOME.copy()
+        yaw = 0.0
         data.mocap_pos[mocap_idx] = target_pos
+        data.mocap_quat[mocap_idx] = _yaw_quat(yaw)
         mujoco.mj_forward(model, data)
         bead_points: list[np.ndarray] = []
         prev_pose: np.ndarray | None = None
@@ -251,6 +277,8 @@ def _run(args: argparse.Namespace, ctl: JoystickEEController, model, data, rende
             target_pos[1] = float(np.clip(target_pos[1], *WORKSPACE_Y))
             target_pos[2] = float(np.clip(target_pos[2], *WORKSPACE_Z))
             data.mocap_pos[mocap_idx] = target_pos
+            yaw += ctl.yaw_rate(max_angular=args.max_angular_speed, invert=args.invert_yaw) * dt
+            data.mocap_quat[mocap_idx] = _yaw_quat(yaw)
             bit = ctl.gripper_bit()
 
             for _ in range(substeps):
@@ -307,8 +335,9 @@ def main() -> None:
 
     ctl = JoystickEEController()
 
-    mjcf_path = _mjcf_path(args.scene)
-    print(f"[record] scene: {args.scene} ({mjcf_path.name})")
+    variant = args.variant if args.variant >= 0 else random.randint(0, N_VARIANTS - 1)
+    mjcf_path = _mjcf_path(args.scene, variant)
+    print(f"[record] scene: {args.scene} variant={variant} ({mjcf_path.name})")
     model = mujoco.MjModel.from_xml_path(str(mjcf_path))
     data = mujoco.MjData(model)
     renderer = mujoco.Renderer(model, height=CAMERA_HW[0], width=CAMERA_HW[1])

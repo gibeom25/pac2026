@@ -1,0 +1,38 @@
+<mujoco model="scene_a4_dashed_2">
+    <!-- 2026-09-23: so101_new_calib_camera.xml(손목 카메라 포함) + 바닥 + A4 용지(용접선 텍스처).
+         scene.xml(원본 so101_new_calib.xml + 바닥)과 같은 패턴, record_mujoco.py/check_gripper.py가
+         쓰는 카메라 버전에 A4 용지만 추가한 버전. -->
+    <include file="ee_rig.xml" />
+
+    <visual>
+        <headlight diffuse="0.6 0.6 0.6" ambient="0.3 0.3 0.3" specular="0 0 0" />
+        <rgba haze="0.15 0.25 0.35 1" />
+        <global azimuth="160" elevation="-20" />
+    </visual>
+
+    <asset>
+        <texture type="skybox" builtin="gradient" rgb1="0.3 0.5 0.7" rgb2="0 0 0" width="512"
+            height="3072" />
+        <texture type="2d" name="groundplane" builtin="checker" mark="edge" rgb1="0.2 0.3 0.4"
+            rgb2="0.1 0.2 0.3"
+            markrgb="0.8 0.8 0.8" width="300" height="300" />
+        <material name="groundplane" texture="groundplane" texuniform="true" texrepeat="5 5"
+            reflectance="0.2" />
+
+        <!-- A4(297x210mm) 용지 + 용접선(dashed_2) 텍스처. 긴 축(297mm)이 이미지 가로.
+             textures/a4_weld_seam.png, PIL로 1회 생성 (배경 (245,244,238), 선 (35,30,28) RGB). -->
+        <texture type="2d" name="a4_weld_seam" file="textures/a4_weld_seam_dashed_2.png" />
+        <material name="a4_weld_seam" texture="a4_weld_seam" texuniform="false" specular="0.05" shininess="0.02" />
+    </asset>
+
+    <worldbody>
+        <light pos="0 0 3.5" dir="0 0 -1" directional="true" />
+        <geom name="floor" size="0 0 0.05" pos="0 0 0" type="plane" material="groundplane" contype="1" conaffinity="3" />
+
+        <!-- A4 용지: 긴 축(297mm)을 world x(로봇 전방)에 맞춰 배치. so101_seam_env.py 경로 영역
+             (x 0.15~0.35)이 용지 안쪽(x 0.10~0.40)에 들어오도록 중심을 x=0.25에 둠. 높이(z)와
+             정확한 배치는 근사값 — 뷰어로 확인 후 조정 필요 (바닥과 동일하게 z=0 기준). -->
+        <geom name="a4_paper" type="plane" size="0.1485 0.105 0.001" pos="0.25 0 0.001"
+            material="a4_weld_seam" contype="0" conaffinity="0" />
+    </worldbody>
+</mujoco>

@@ -100,20 +100,26 @@ home 자세, 2초 드리프트, 경로 영역 안 이동/회전 추종(정지 �
 물리 안정성 검증: mocap을 바닥 8~10cm 아래로 계속 명령해도(극단적 스트레스 테스트) NaN 없이 반발력으로
 막힘, 평상시 추종 오차 <0.4mm.
 
-### joystick_input.py — Extreme 3D Pro(evdev) -> EE 속도/그리퍼 신호
+### joystick_input.py — Extreme 3D Pro(evdev) -> EE 속도/yaw/그리퍼 신호
 
 실제 장치(`/dev/input/eventNN`, evdev로 자동 탐색)에서 **직접 읽어 확인한** 축/버튼 매핑을 쓴다
 (추측 아님): `ABS_X`(좌우 스틱) -> EE y속도, `ABS_Y`(전후 스틱) -> EE x속도, `ABS_THROTTLE`(슬라이더,
-자체복원 없음 — **연결 시점의 현재 위치를 정지 기준으로 잡는다**, 안 그러면 안 만져도 계속 움직임) ->
-EE z속도, `BTN_TRIGGER` -> 그리퍼/도구 신호(누르는 동안 1, 임계값 없음). 회전(`ABS_RZ` 트위스트,
-햇스위치)은 v1 미사용 — ZERO_YAW 결정과 일치.
+자체복원 없음 — **연결 시점의 현재 위치를 정지 기준으로 잡는다**, 안 그러면 안 만져도 계속 움직임,
+연결 시점에 끝 근처에 있으면 경고 출력) -> EE z속도, `ABS_RZ`(트위스트) -> yaw 각속도(`yaw_rate()`),
+`BTN_TRIGGER` -> 그리퍼/도구 신호(누르는 동안 1, 임계값 없음). x/z 기본 부호는 실사용 확인 후
+반전해뒀다 — 반대로 느껴지면 `--invert-x/--invert-y/--invert-z/--invert-yaw`로 바로 뒤집을 것
+(`record_mujoco.py`/`check_ee.py` 둘 다 지원).
+
+**pitch/roll은 조이스틱으로 직접 명령하지 않는다.** mocap_target은 위치+yaw만 갖고, 실제 물리
+바디(`ee_body`)가 weld로 그 뒤를 따라가다 막대가 바닥/용지에 접촉하면 반발력으로 자연스럽게
+기운다 — 그 실측 기울기(`data.xmat`)를 그대로 기록한다. 지금(평면 용지)은 거의 항상 수직이라
+변화가 거의 없고, 나중에 3D 그루브가 있는 워크피스를 쓰면 접촉면 기울기 따라 의미 있게 기운다.
 
 ```bash
 PYTHONPATH=. python ai_layer/tools/joystick_input.py [--list]
 ```
 
 단독 실행하면 라이브 진단 모드(축/버튼 값 실시간 출력). `--list`는 연결된 입력 장치 목록만 출력.
-x/y 부호(좌우/전후가 반대로 느껴지면)는 `ee_velocity()`에서 직접 뒤집을 것.
 
 ## record_mujoco.py — 조이스틱 -> MuJoCo EE 리그 미러링 데이터 수집 (2026-09-22, 기범 / 2026-09-23 조이스틱 전환)
 
@@ -127,11 +133,18 @@ x/y 부호(좌우/전후가 반대로 느껴지면)는 `ee_velocity()`에서 직
 
 **`--scene`으로 용접선 형태를 고른다** (기본 `curve`): `curve`(완만한 곡선) / `straight`(직선) /
 `sharp_curve`(급곡선) / `corner`(코너) / `branch`(분기점, seam_cv 분기점 순서 로직 검증용) /
-`dashed`(점선, seam_cv KD-tree 갭브리징 검증용). 텍스처는 `textures/gen_seam_textures.py`로 생성
-(선 너비 등 파라미터화돼 있어 변형 추가하기 쉬움). A4 용지는 모든 씬에서 공통으로 세계좌표 x=0.25
+`dashed`(점선, seam_cv KD-tree 갭브리징 검증용). A4 용지는 모든 씬에서 공통으로 세계좌표 x=0.25
 중심(so101_seam_env.py 경로 영역 x 0.15~0.35가 안쪽에 들어옴), 긴 축(297mm)이 x축. 손목 카메라는
 `ee_body`에 직접 달려 있고 위치는 근사값(뷰어로 확인 후 조정 가능) — top-down에 가까운 각도로
 바로 아래 용접선이 보이게 맞춰뒀다.
+
+**`--variant`로 형태별 가우시안 노이즈 변형을 고른다** (기본 `-1` = 매번 무작위, `0`=노이즈 없는
+기준, `1~4`=고정 시드로 재현 가능한 노이즈 버전). 형태마다 곡선 진폭/주기/위상, 코너 꺾이는
+위치/각도, 분기 위치/각도, 점선 간격, **선 굵기**까지 흔들어서 형태당 5종씩(총 30개 씬) 미리
+구워뒀다(`textures/gen_seam_textures.py --variants N`). 레퍼런스 6종만 계속 쓰면 BC가 "선은
+항상 이 모양"이라고 암기할 위험이 있어서, 매 녹화 세션마다 다른 인스턴스를 보게 하는 게 목적
+— 왜 런타임 랜덤화(텍스처를 매 에피소드 새로 그려 넣기) 대신 오프라인 사전 생성인지는 파일
+상단 docstring 참고(GPU 텍스처 재업로드가 필요해서 뷰어 켠 채로는 번거로움).
 
 ```bash
 PYTHONPATH=. python ai_layer/tools/record_mujoco.py \
@@ -139,15 +152,17 @@ PYTHONPATH=. python ai_layer/tools/record_mujoco.py \
     --scene dashed --num-episodes 5 --episode-seconds 15
 ```
 
-에피소드 사이 Enter로 다음 녹화 시작. `--max-linear-speed`(기본 0.05 m/s)로 조이스틱 최대 속도 조절.
-EE 위치는 작업공간(x 0.05~0.45, y -0.20~0.20, z -0.02~0.35, `WORKSPACE_*`)으로 clamp된다 — 관절
-리치 제약이 없어진 대신 슬라이더/스틱을 오래 누르고 있어도 화면 밖으로 날아가지 않게.
+에피소드 사이 Enter로 다음 녹화 시작. `--max-linear-speed`(기본 0.05 m/s)/`--max-angular-speed`
+(기본 1.0 rad/s)로 조이스틱 최대 속도 조절. EE 위치는 작업공간(x 0.05~0.45, y -0.20~0.20,
+z -0.02~0.35, `WORKSPACE_*`)으로 clamp된다 — 관절 리치 제약이 없어진 대신 슬라이더/스틱을 오래
+누르고 있어도 화면 밖으로 날아가지 않게.
 
 **그리퍼/도구 신호**: `BTN_TRIGGER`를 누르는 동안 1, 막대(`tool_rod`, 반지름 1.5mm)가 실제로
 바닥/용지에 물리 접촉 중일 때만(`_contact_pos()`, `mj_contactForce` 기반) 그 접촉점에 **그리스/실리콘
-비드처럼 작은 점 자국을 남긴다**(`BEAD_RGBA`/`BEAD_RADIUS`/`BEAD_STRIDE`) — 신호만 켜져 있고 막대가
-떠 있으면 안 찍힌다. 렌더된 손목 카메라 이미지에도 남기 때문에(뷰어 전용 아님) BC가 이미 도포된
-구간을 시각적으로 구분할 수 있다.
+비드처럼 자국을 남긴다**(`BEAD_RGBA`/`BEAD_RADIUS`(1.8mm)/`BEAD_STRIDE`(매 스텝) — 촘촘하게 찍어서
+거의 이어진 선처럼 보이고, `specular`/`shininess`/`reflectance`를 낮게 줘서 무광에 가까운 살짝
+반투명한 실리콘 느낌을 낸다) — 신호만 켜져 있고 막대가 떠 있으면 안 찍힌다. 렌더된 손목 카메라
+이미지에도 남기 때문에(뷰어 전용 아님) BC가 이미 도포된 구간을 시각적으로 구분할 수 있다.
 
 ## check_ee.py — 조이스틱 방향/접촉 확인 (2026-09-23, 기범)
 
