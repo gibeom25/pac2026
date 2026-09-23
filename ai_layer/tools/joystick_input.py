@@ -78,19 +78,38 @@ class JoystickEEController:
         # 계속 최대 속도로 z가 움직여버리므로, 연결 시점의 실제 위치를 "정지" 기준으로 삼는다 —
         # 사용자가 시작 전에 슬라이더를 원하는 중립 위치에 둔 채로 스크립트를 켜면 된다.
         self._throttle_zero_raw = self.dev.absinfo(ecodes.ABS_THROTTLE).value
+        t_info = self._axis_info[ecodes.ABS_THROTTLE]
         print(
-            f"[joystick] throttle 슬라이더 현재 위치(raw={self._throttle_zero_raw})를 "
-            f"정지(z속도=0) 기준으로 잡습니다 — 필요하면 움직이기 전에 원하는 위치로 옮겨두세요."
+            f"[joystick] throttle 슬라이더 현재 위치(raw={self._throttle_zero_raw}, "
+            f"범위 {t_info.min}~{t_info.max})를 정지(z속도=0) 기준으로 잡습니다."
         )
+        margin = (t_info.max - t_info.min) * 0.1
+        if self._throttle_zero_raw <= t_info.min + margin or self._throttle_zero_raw >= t_info.max - margin:
+            print(
+                "[joystick] ⚠️  슬라이더가 끝(min/max) 근처에 있습니다 — 이 상태로 시작하면 z가 "
+                "한쪽 방향으로만 움직입니다. Ctrl+C로 종료하고 슬라이더를 중간쯤으로 옮긴 뒤 "
+                "다시 실행하는 걸 권장합니다 (지금 이대로 진행하면 반대 방향은 쓸 수 없음)."
+            )
         self.state = JoystickState()
         self._sync_from_device()
 
     def _norm(self, code: int, raw: int) -> float:
         info = self._axis_info[code]
-        span = (info.max - info.min) / 2.0
-        center = self._throttle_zero_raw if code == ecodes.ABS_THROTTLE else (info.max + info.min) / 2.0
+        if code == ecodes.ABS_THROTTLE:
+            # 자체 복원 없는 슬라이더라 연결 시점 위치를 "정지" 기준(zero)으로 삼는데, 그 기준을
+            # 축 전체 half-span(고정값)으로 나누면 zero가 한쪽 끝 근처일 때 반대 방향은 거의
+            # 못 쓰고(값이 -1 근처로 바로 포화) 다른 방향만 넓게 쓰이는 비대칭 버그가 생긴다.
+            # zero 기준 "남은 이동 범위"를 방향별로 따로 잡아 양쪽 다 -1..1 전체를 쓸 수 있게 한다.
+            zero = self._throttle_zero_raw
+            span = (info.max - zero) if raw >= zero else (zero - info.min)
+            center = zero
+        else:
+            span = (info.max - info.min) / 2.0
+            center = (info.max + info.min) / 2.0
+        if span <= 0:
+            return 0.0
         val = (raw - center) / span
-        if span > 0 and abs(raw - center) < info.flat:
+        if abs(raw - center) < info.flat:
             val = 0.0
         return float(max(-1.0, min(1.0, val)))
 
