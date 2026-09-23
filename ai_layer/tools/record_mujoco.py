@@ -74,9 +74,15 @@ MOCAP_HOME = np.array([0.25, 0.0, 0.15])
 # 렌더된 손목 카메라 이미지에도 남아서(뷰어 전용이 아님) BC가 이미 도포된 구간을 시각적으로
 # 구분할 수 있다. mjv_initGeom으로 씬에 시각 전용 geom을 얹는 방식이라 이 자국 자체는 물리에
 # 영향 없다 (mujoco.Renderer.scene / viewer.user_scn 둘 다 지원).
-BEAD_RGBA = np.array([0.72, 0.72, 0.76, 1.0], dtype=np.float32)
-BEAD_RADIUS = 0.0015  # 1.5mm
-BEAD_STRIDE = 4
+# 실리콘 느낌: 살짝 반투명한 미색 + 무광에 가까운 낮은 광택(진짜 광택 플라스틱처럼 반짝이지 않게
+# specular/shininess를 낮게, reflectance는 거의 0으로 — mjvGeom은 material 없이도 이 필드들을
+# geom 단위로 직접 지원한다(mjv_initGeom이 채우는 기본 필드 외에 아래서 수동으로 덮어씀).
+BEAD_RGBA = np.array([0.85, 0.83, 0.78, 0.95], dtype=np.float32)  # 살짝 반투명한 미색(실리콘)
+BEAD_SPECULAR = 0.25
+BEAD_SHININESS = 0.15
+BEAD_REFLECTANCE = 0.05
+BEAD_RADIUS = 0.0018  # 1.8mm — 촘촘한 간격과 겹쳐 매끈하게 이어진 비드처럼 보이게 살짝 키움
+BEAD_STRIDE = 1  # 매 스텝 찍음 — 점 간격이 구슬 반지름보다 촘촘해져 거의 이어진 선처럼 보임
 
 
 def _mjcf_path(scene: str) -> Path:
@@ -98,6 +104,9 @@ def _draw_bead_trail(scene, points: list[np.ndarray]) -> None:
             break
         g = scene.geoms[scene.ngeom]
         mujoco.mjv_initGeom(g, type=mujoco.mjtGeom.mjGEOM_SPHERE, size=size, pos=p, mat=mat, rgba=BEAD_RGBA)
+        g.specular = BEAD_SPECULAR
+        g.shininess = BEAD_SHININESS
+        g.reflectance = BEAD_REFLECTANCE
         scene.ngeom += 1
 
 
