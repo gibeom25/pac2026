@@ -1,18 +1,19 @@
 #!/usr/bin/env python
-"""SO-101 leader -> MuJoCo 실시간 뷰어. 그리퍼는 이진(0/1) 신호 + LED 테스트용.
+"""SO-101 leader -> MuJoCo 실시간 뷰어. 그리퍼는 이진(0/1) 신호 + LED/비드 테스트용.
 
 record_mujoco.py로 전체 녹화를 돌리지 않고, 팔 5관절은 리더를 따라 실시간으로 움직이는 걸
 뷰어 창으로 보고, 그리퍼는 더 이상 구동하지 않는 대신(설계문서 2절 gripper_signal[0/1]) 리더
 그리퍼 raw(0~100)를 임계값으로 이진화해 MuJoCo에 붙인 LED(tool_led, so101_new_calib_camera.xml)를
-켜고 끈다. 기본적으로 뷰어 창을 띄운다 (다른 시뮬레이션 도구와 동일한 기본값).
+켜고 끄고, 신호 on인 동안 그리스/실리콘 비드처럼 자국도 남긴다(record_mujoco.py의 _draw_bead_trail).
+기본적으로 뷰어 창을 띄운다 (다른 시뮬레이션 도구와 동일한 기본값).
 
 실행 (pac2026 conda 환경):
   conda activate pac2026
   PYTHONPATH=. python ai_layer/tools/check_gripper.py --leader-port /dev/ttyACM0 \
-      --leader-id my_awesome_leader_arm
+      --leader-id my_awesome_leader_arm --scene dashed
 
-리더 그리퍼를 반 이상 닫으면 LED가 켜지고(bit=1), 열면 꺼진다(bit=0) — 뷰어 속 LED 색과
-콘솔 출력을 같이 본다. 반대로 켜지길 원하면 --gripper-invert.
+리더 그리퍼를 반 이상 닫으면 LED가 켜지고(bit=1) 비드가 쌓이기 시작, 열면 꺼진다(bit=0) — 뷰어 속
+LED 색/비드 자국과 콘솔 출력을 같이 본다. 반대로 켜지길 원하면 --gripper-invert.
 Ctrl+C 또는 뷰어 창 닫기로 종료.
 """
 
@@ -36,6 +37,7 @@ from ai_layer.tools.record_mujoco import (  # noqa: E402
     LED_OFF_RGBA,
     LED_ON_RGBA,
     SCENE_VARIANTS,
+    _draw_bead_trail,
     _mjcf_path,
     _remap_deg,
     build_joint_remap,
@@ -64,6 +66,7 @@ def _run(leader, model, data, viewer, remap: dict, gripper_invert: bool, hz: flo
     gripper_fixed_rad = float(model.actuator_ctrlrange[gripper_idx][0])  # ctrlrange 하한 = 닫힘
     led_gid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, LED_GEOM_NAME)
     print_every = max(1, int(hz // 5))
+    bead_points: list[np.ndarray] = []
 
     step = 0
     while True:
@@ -82,7 +85,12 @@ def _run(leader, model, data, viewer, remap: dict, gripper_invert: bool, hz: flo
         for _ in range(substeps):
             mujoco.mj_step(model, data)
 
+        if bit and step % 2 == 0:
+            bead_points.append(data.geom_xpos[led_gid].copy())
+
         if viewer is not None:
+            viewer.user_scn.ngeom = 0
+            _draw_bead_trail(viewer.user_scn, bead_points)
             viewer.sync()
             if not viewer.is_running():
                 print("\n[check_gripper] 뷰어 창이 닫혀서 종료합니다.")

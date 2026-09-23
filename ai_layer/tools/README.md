@@ -90,33 +90,39 @@ home 자세, 2초 드리프트, 경로 영역 안 이동/회전 추종(정지 �
 ## record_mujoco.py — SO-101 leader → MuJoCo follower 미러링 데이터 수집 (2026-09-22, 기범)
 
 실물 팔로워/카메라 없이 **leader 하나만으로** BC 학습용 LeRobotDataset을 만든다. leader가 읽은 관절각을
-MuJoCo(`assets/so101/scene_a4.xml` = `so101_new_calib_camera.xml`(손목 카메라 포함) + 바닥 +
-용접선이 그려진 A4 용지, `textures/a4_weld_seam.png`)의 팔로워에 그대로 명령하고, 물리 스텝 후 실제
-도달한 관절각(observation.state) + 렌더링된 손목 이미지 + 명령값(action)을 기록한다. 관절공간 그대로
-저장하므로 실물 `lerobot-record` 결과물과 포맷이 동일 — `train_bc.py`에 바로 사용 가능.
+MuJoCo(`assets/so101/scene_a4_<--scene>.xml` = `so101_new_calib_camera.xml`(손목 카메라 포함) + 바닥 +
+용접선이 그려진 A4 용지)의 팔로워에 그대로 명령하고, 물리 스텝 후 실제 도달한 관절각(observation.state)
++ 렌더링된 손목 이미지 + 명령값(action)을 기록한다. 관절공간 그대로 저장하므로 실물 `lerobot-record`
+결과물과 포맷이 동일 — `train_bc.py`에 바로 사용 가능.
 
-A4 용지는 세계좌표 x=0.25 중심(so101_seam_env.py 경로 영역 x 0.15~0.35가 안쪽에 들어옴), 긴 축(297mm)이
-x축. 배치는 근사값 — 손목 카메라 extrinsic이 아직 근사 배치라(위 캐비어트 참고) 홈 자세에서는 카메라가
-용지를 바로 보지 않을 수 있음, 뷰어로 확인 후 필요하면 카메라/용지 위치 조정할 것.
+**`--scene`으로 용접선 형태를 고른다** (기본 `curve`): `curve`(완만한 곡선) / `straight`(직선) /
+`sharp_curve`(급곡선) / `corner`(코너) / `branch`(분기점, seam_cv 분기점 순서 로직 검증용) /
+`dashed`(점선, seam_cv KD-tree 갭브리징 검증용). 텍스처는 `textures/gen_seam_textures.py`로 생성
+(선 너비 등 파라미터화돼 있어 변형 추가하기 쉬움). A4 용지는 모든 씬에서 공통으로 세계좌표 x=0.25
+중심(so101_seam_env.py 경로 영역 x 0.15~0.35가 안쪽에 들어옴), 긴 축(297mm)이 x축. 배치는 근사값 —
+손목 카메라 extrinsic이 아직 근사 배치라(아래 캐비어트 참고) 홈 자세에서는 카메라가 용지를 바로 보지
+않을 수 있음, 뷰어로 확인 후 필요하면 카메라/용지 위치 조정할 것.
 
 ```bash
 PYTHONPATH=. python ai_layer/tools/record_mujoco.py \
     --leader-port /dev/ttyACM0 --leader-id my_awesome_leader_arm \
     --repo-id <user>/so101-mujoco-demo --root ./datasets/so101-mujoco-demo \
-    --num-episodes 5 --episode-seconds 15
+    --scene dashed --num-episodes 5 --episode-seconds 15
 ```
 
 에피소드 사이 Enter로 다음 녹화 시작(리더를 시작 자세로 되돌릴 시간). 카메라 extrinsic(`wrist` 카메라의
 pos/quat)은 실측 캘리브레이션이 아니라 근사 배치 — 실물과 비교해 보정 필요.
 
 **그리퍼는 2026-09-23부터 구동하지 않는다.** 설계문서 2절의 `gripper_signal[0/1]`을 그대로 쓰기로
-해서, MuJoCo 그리퍼 조는 고정값에 묶어두고 리더의 raw 그리퍼 값(`MotorNormMode.RANGE_0_100`, 0~100,
-각도 아님)을 임계값 50으로 이진화해 action/observation의 그리퍼 채널에 그대로 기록한다
-(`gripper_bit()`). 실물 대체 도구(5cm 막대 + LED, `assets/so101/so101_new_calib_camera.xml`의
-`tool_rod`/`tool_led`)로 뷰어에서 켜짐/꺼짐을 눈으로 확인 가능. 기본은 raw>=50 -> 1(켜짐) —
-반대면 `--gripper-invert`.
+해서, MuJoCo 그리퍼 조는 닫힘 위치에 고정해두고 리더의 raw 그리퍼 값(`MotorNormMode.RANGE_0_100`,
+0~100, 각도 아님)을 임계값 50으로 이진화해 action/observation의 그리퍼 채널에 그대로 기록한다
+(`gripper_bit()`, leader 기준 raw<50=닫힘=1). 신호 on(1)인 동안 손목에 붙인 5cm 막대(`tool_rod`) 끝
+(`tool_led`, `so101_new_calib_camera.xml`)에서 **그리스/실리콘 비드처럼 작은 점들의 자국을 남긴다**
+(`BEAD_RGBA`/`BEAD_RADIUS`/`BEAD_STRIDE`) — LED 색(빨강/초록)은 현재 on/off 상태, 비드 자국은 지금까지
+지나온 궤적의 누적 기록. 렌더된 손목 카메라 이미지에도 남기 때문에(뷰어 전용 아님) BC가 이미 도포된
+구간을 시각적으로 구분할 수 있다. 기본은 raw<50 -> 1(닫힘/켜짐) — 반대면 `--gripper-invert`.
 
-## check_gripper.py — 그리퍼 이진 신호(LED) 확인 (2026-09-23, 기범)
+## check_gripper.py — 그리퍼 이진 신호(LED+비드) 확인 (2026-09-23, 기범)
 
 record_mujoco.py로 전체 녹화를 돌리지 않고 팔 5관절 미러링 + 그리퍼 LED 동작만 빠르게 확인. 리더를
 움직이면 뷰어 속 팔이 따라 움직이고, 그리퍼를 반 이상 닫으면 LED(`tool_led`)가 켜진다.
