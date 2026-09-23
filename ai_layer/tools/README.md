@@ -149,10 +149,14 @@ PYTHONPATH=. python ai_layer/tools/joystick_input.py [--list]
 ```bash
 PYTHONPATH=. python ai_layer/tools/record_mujoco.py \
     --repo-id <hf-user>/so101-mujoco-demo --root ./datasets/so101-mujoco-demo \
-    --scene dashed --num-episodes 5 --episode-seconds 15
+    --scene dashed --num-episodes 5
 ```
 
-에피소드 사이 Enter로 다음 녹화 시작. `--max-linear-speed`(기본 0.05 m/s)/`--max-angular-speed`
+**에피소드 길이는 기본적으로 무제한이다 — `BTN_THUMB`(엄지 버튼)를 누르면 그 자리에서 바로
+저장하고 끝난다.** 시간을 미리 정해두고 쫓기듯 그릴 필요 없이 다 그렸을 때 직접 끝내는 방식.
+필요하면 `--episode-seconds`로 상한을 줄 수도 있다(그 전에 BTN_THUMB를 눌러도 됨, 시간이
+차면 자동 종료). 에피소드가 끝나면 EE 위치/자세가 즉시 홈으로 리셋되고(뷰어에도 바로 반영),
+Enter로 다음 에피소드를 시작한다. `--max-linear-speed`(기본 0.05 m/s)/`--max-angular-speed`
 (기본 1.0 rad/s)로 조이스틱 최대 속도 조절. EE 위치는 작업공간(x 0.05~0.45, y -0.20~0.20,
 z -0.02~0.35, `WORKSPACE_*`)으로 clamp된다 — 관절 리치 제약이 없어진 대신 슬라이더/스틱을 오래
 누르고 있어도 화면 밖으로 날아가지 않게.
