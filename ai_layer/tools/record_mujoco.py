@@ -4,7 +4,9 @@
 실물 팔로워/카메라 없이 리더 암 하나만으로 BC 학습용 데이터셋을 만들기 위한 스크립트.
 관절공간(joint-space) 그대로 기록한다 — `train_bc.py`/`SO101BCDataset`이 기대하는 것과 동일한
 형식(observation.state/action = JOINT_NAMES 순서, degree)이라 실물 `lerobot-record` 결과물과
-호환된다. 이미지는 MuJoCo 손목 카메라(`so101_new_calib_camera.xml`, `assets/so101/README` 참고)로
+호환된다. 단, 그리퍼 채널은 예외로 항상 0.0/1.0 이진값이다 (설계문서 2절 gripper_signal[0/1] —
+그리퍼 조는 구동하지 않고 고정, MuJoCo에 붙인 LED(tool_led)로 뷰어에서 확인 가능).
+이미지는 MuJoCo 손목 카메라(`so101_new_calib_camera.xml`, `assets/so101/README` 참고)로
 렌더링한다.
 
 실행 (pac2026 conda 환경, lerobot 설치되어 있음 — leader 통신용):
@@ -42,6 +44,15 @@ MJCF_PATH = Path(__file__).resolve().parents[2] / "assets" / "so101" / "so101_ne
 CAMERA_NAME = "wrist"
 CAMERA_HW = (240, 320, 3)
 
+# 2026-09-23: 그리퍼(움직이는 조)는 더 이상 구동하지 않는다 — 설계문서 2절의 gripper_signal[0/1]을
+# 그대로 이진 트리거로 기록한다 (실제로는 그리퍼가 아니라 펌프/도구 on-off일 가능성이 큼, docs 3.4절
+# "그리퍼/펌프 신호" 참고). MJCF에 5cm 고정 막대(tool_rod) + LED(tool_led)를 붙여 뷰어에서 0/1을
+# 눈으로 확인할 수 있게 했다 (so101_new_calib_camera.xml).
+GRIPPER_RAW_THRESHOLD = 50.0  # leader RANGE_0_100 값 기준 이진화 임계값
+LED_GEOM_NAME = "tool_led"
+LED_ON_RGBA = (0.15, 0.95, 0.15, 1.0)
+LED_OFF_RGBA = (0.3, 0.05, 0.05, 1.0)
+
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="SO-101 leader -> MuJoCo follower 미러링 데이터 수집.")
@@ -57,7 +68,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--gripper-invert",
         action="store_true",
-        help="그리퍼 열림/닫힘 방향이 반대로 매핑되면 켠다 (leader 0=열림/100=닫힘인 개체용, 기본: 0=닫힘/100=열림)",
+        help="leader raw>=50을 0으로, <50을 1로 뒤집는다 (기본: raw>=50 -> 1/켜짐, <50 -> 0/꺼짐)",
     )
     return p.parse_args()
 
@@ -131,46 +142,51 @@ def build_dataset(args: argparse.Namespace) -> LeRobotDataset:
     )
 
 
-def build_joint_remap(leader, model, gripper_invert: bool = False) -> dict[str, tuple[float, float, float, float]]:
-    """leader 각도/퍼센트 범위 -> MuJoCo 관절(ctrlrange) 각도 범위 선형 리매핑 테이블.
+ARM_JOINT_NAMES = [n for n in JOINT_NAMES if n != "gripper"]
 
-    관절 5개(shoulder_pan .. wrist_roll)는 lerobot의 DEGREES 정규화 공식
-    (``degrees = (raw - mid) * 360 / max_res``, FeetechMotorsBus._normalize)으로 leader의
-    실제 각도 범위를 구해 MuJoCo 쪽 범위와 짝짓는다.
 
-    그리퍼는 lerobot의 `SOLeader`(so_leader.py)에서 ``use_degrees`` 설정과 무관하게 항상
-    ``MotorNormMode.RANGE_0_100``으로 고정돼 있다 — 즉 `leader.get_action()["gripper.pos"]`는
-    처음부터 각도가 아니라 캘리브레이션된 0(한쪽 끝)~100(반대쪽 끝) 값이다. 예전에 여기서
-    DEGREES 공식(±57.3도)으로 잘못 계산해 리매핑했더니 리더를 완전히 닫아도(값 0) MuJoCo
-    관절 중간 부근(약 45도)으로 매핑되는 더 심한 오차가 생겼다 — 그리퍼는 항상 [0, 100]을
-    MuJoCo ctrlrange에 직접 선형 매핑한다. 0=닫힘/100=열림으로 가정하며(경험적으로 확인:
-    열림은 예전 raw-passthrough 코드로도 거의 맞았고 닫힘만 어긋났음) 실제로 반대면
-    ``--gripper-invert``로 뒤집는다.
+def build_joint_remap(leader, model) -> dict[str, tuple[float, float, float, float]]:
+    """leader 각도 범위 -> MuJoCo 관절(ctrlrange) 각도 범위 선형 리매핑 테이블 (팔 5관절만).
+
+    lerobot의 DEGREES 정규화 공식(``degrees = (raw - mid) * 360 / max_res``,
+    FeetechMotorsBus._normalize)으로 leader의 실제 각도 범위를 구해 MuJoCo 쪽 범위와 짝짓는다.
+
+    그리퍼는 여기 포함하지 않는다 — lerobot `SOLeader`(so_leader.py)에서 ``use_degrees``와
+    무관하게 항상 ``MotorNormMode.RANGE_0_100``으로 고정돼 있어 애초에 각도가 아니고
+    (leader.get_action()["gripper.pos"]는 0~100 값), 게다가 이제는 그리퍼 조를 구동하지도
+    않으므로(위 GRIPPER_RAW_THRESHOLD 참고) 각도 리매핑 자체가 필요 없다.
     """
     remap: dict[str, tuple[float, float, float, float]] = {}
     for i, name in enumerate(JOINT_NAMES):
-        m_lo, m_hi = (float(np.rad2deg(v)) for v in model.actuator_ctrlrange[i])
         if name == "gripper":
-            l_lo, l_hi = (100.0, 0.0) if gripper_invert else (0.0, 100.0)
-        else:
-            cal = leader.bus.calibration[name]
-            model_name = leader.bus.motors[name].model
-            max_res = leader.bus.model_resolution_table[model_name] - 1
-            mid = (cal.range_min + cal.range_max) / 2
-            l_lo = (cal.range_min - mid) * 360 / max_res
-            l_hi = (cal.range_max - mid) * 360 / max_res
+            continue
+        m_lo, m_hi = (float(np.rad2deg(v)) for v in model.actuator_ctrlrange[i])
+        cal = leader.bus.calibration[name]
+        model_name = leader.bus.motors[name].model
+        max_res = leader.bus.model_resolution_table[model_name] - 1
+        mid = (cal.range_min + cal.range_max) / 2
+        l_lo = (cal.range_min - mid) * 360 / max_res
+        l_hi = (cal.range_max - mid) * 360 / max_res
         remap[name] = (l_lo, l_hi, m_lo, m_hi)
     return remap
 
 
 def _remap_deg(leader_deg: dict[str, float], remap: dict[str, tuple[float, float, float, float]]) -> dict[str, float]:
-    """leader 각도(deg) -> MuJoCo 관절 각도(deg) 선형 변환 (범위 밖은 clip)."""
+    """leader 각도(deg) -> MuJoCo 관절 각도(deg) 선형 변환 (범위 밖은 clip). 팔 5관절 전용."""
     out = {}
     for name, val in leader_deg.items():
         l_lo, l_hi, m_lo, m_hi = remap[name]
         t = (val - l_lo) / (l_hi - l_lo)
         out[name] = float(np.clip(m_lo + t * (m_hi - m_lo), m_lo, m_hi))
     return out
+
+
+def gripper_bit(raw: float, invert: bool = False) -> float:
+    """leader raw gripper.pos(0~100, RANGE_0_100) -> 이진 신호(0.0/1.0). raw>=임계값 -> 1(켜짐)."""
+    on = raw >= GRIPPER_RAW_THRESHOLD
+    if invert:
+        on = not on
+    return 1.0 if on else 0.0
 
 
 def _run(
@@ -187,8 +203,9 @@ def _run(
     substeps = max(1, int(round(dt / model.opt.timestep)))
 
     gripper_idx = JOINT_NAMES.index("gripper")
-    ctrl_lo, ctrl_hi = model.actuator_ctrlrange[gripper_idx]
-    print(f"[record] MuJoCo gripper ctrlrange: {np.rad2deg(ctrl_lo):.1f}~{np.rad2deg(ctrl_hi):.1f} deg")
+    gripper_fixed_rad = float(np.mean(model.actuator_ctrlrange[gripper_idx]))  # 조는 항상 이 값 고정, 구동 안 함
+    led_gid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, LED_GEOM_NAME)
+    print(f"[record] gripper: 조 구동 안 함 (고정 {np.rad2deg(gripper_fixed_rad):.1f}deg), 신호는 0/1 이진 (LED로 표시)")
 
     for ep in range(args.num_episodes):
         input(f"\n[record] 에피소드 {ep + 1}/{args.num_episodes} — 준비되면 Enter (Ctrl+C 종료) ")
@@ -200,11 +217,16 @@ def _run(
         for step in range(n_steps):
             loop_t0 = time.perf_counter()
 
-            action = leader.get_action()  # {"shoulder_pan.pos": deg, ...} (leader 캘리브레이션 각도)
-            leader_deg = {name: action[f"{name}.pos"] for name in JOINT_NAMES}
-            joint_deg = _remap_deg(leader_deg, joint_remap)  # -> MuJoCo 관절 범위로 리매핑, 기록되는 action도 이 값
+            action = leader.get_action()  # {"shoulder_pan.pos": deg, ..., "gripper.pos": 0~100}
+            leader_deg = {name: action[f"{name}.pos"] for name in ARM_JOINT_NAMES}
+            joint_deg = _remap_deg(leader_deg, joint_remap)  # -> MuJoCo 관절 범위로 리매핑 (팔 5관절만)
+
+            gripper_raw = action["gripper.pos"]
+            bit = gripper_bit(gripper_raw, invert=args.gripper_invert)
+            joint_deg["gripper"] = float(np.rad2deg(gripper_fixed_rad))
 
             data.ctrl[:] = np.deg2rad([joint_deg[n] for n in JOINT_NAMES])
+            model.geom_rgba[led_gid] = LED_ON_RGBA if bit else LED_OFF_RGBA
             for _ in range(substeps):
                 mujoco.mj_step(model, data)
 
@@ -219,19 +241,19 @@ def _run(
             renderer.update_scene(data, camera=CAMERA_NAME)
             img = renderer.render()
 
-            obs_values = {**state_deg, "wrist": img}
+            # 그리퍼 채널은 관절각 대신 이진 신호(0.0/1.0)를 기록 — 조는 고정이라 qpos는 의미 없음.
+            action_values = {**joint_deg, "gripper": bit}
+            obs_values = {**state_deg, "gripper": bit, "wrist": img}
             obs_frame = build_dataset_frame(dataset.features, obs_values, prefix="observation")
-            action_frame = build_dataset_frame(dataset.features, joint_deg, prefix="action")
+            action_frame = build_dataset_frame(dataset.features, action_values, prefix="action")
 
             dataset.add_frame({**obs_frame, **action_frame, "task": args.task})
 
             if step % args.fps == 0:
-                g_target = joint_deg["gripper"]
-                g_state = state_deg["gripper"]
-                clamped = "  <- ctrlrange에 안 들어와서 clip됨!" if not (np.rad2deg(ctrl_lo) <= g_target <= np.rad2deg(ctrl_hi)) else ""
+                led = "ON " if bit else "OFF"
                 print(
-                    f"  t={step / args.fps:.1f}s state={[round(state_deg[n], 1) for n in JOINT_NAMES]}"
-                    f"  | gripper target={g_target:.1f} actual={g_state:.1f}{clamped}"
+                    f"  t={step / args.fps:.1f}s arm={[round(joint_deg[n], 1) for n in ARM_JOINT_NAMES]}"
+                    f"  | gripper raw={gripper_raw:5.1f} -> bit={bit:.0f} LED={led}"
                 )
 
             elapsed = time.perf_counter() - loop_t0
@@ -255,8 +277,8 @@ def main() -> None:
     renderer = mujoco.Renderer(model, height=CAMERA_HW[0], width=CAMERA_HW[1])
     mujoco.mj_forward(model, data)
 
-    joint_remap = build_joint_remap(leader, model, gripper_invert=args.gripper_invert)
-    for name in JOINT_NAMES:
+    joint_remap = build_joint_remap(leader, model)
+    for name in ARM_JOINT_NAMES:
         l_lo, l_hi, m_lo, m_hi = joint_remap[name]
         print(f"[record] remap {name}: leader[{l_lo:.1f},{l_hi:.1f}] -> mujoco[{m_lo:.1f},{m_hi:.1f}] deg")
 

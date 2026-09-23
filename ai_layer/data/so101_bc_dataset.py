@@ -15,9 +15,13 @@
 
 가정 (실제 녹화 데이터로 최초 실행 시 반드시 확인할 것):
   - `observation.state`, `action`이 JOINT_NAMES(kinematics.py) 순서로 정렬된 (6,) 텐서.
-    lerobot 0.4.x so101_follower는 기본 use_degrees=True → 관절 5개는 degree, gripper는 0~100.
+    lerobot 0.4.x so101_follower는 기본 use_degrees=True → 관절 5개는 degree.
     메타(`dataset.meta.features["observation.state"]["names"]`)로 실제 순서를 확인한다.
-  - gripper 채널(7번째)은 녹화값(0~100)을 그대로 둔다. 실로봇 매핑은 추론 출력 단계에서.
+  - gripper 채널(7번째)은 녹화값을 그대로 둔다 (변환 없음). 실로봇 `lerobot-record`로 딴
+    데이터는 RANGE_0_100(0~100)이지만, 2026-09-23부터 그리퍼 조는 구동하지 않고 설계문서
+    2절 gripper_signal[0/1]을 그대로 쓰기로 해서 `record_mujoco.py`가 만드는 MuJoCo 미러
+    데이터셋은 이미 이진(0.0/1.0)이다 — 소스가 섞이면 이 채널의 값 범위가 다르니 학습 전에
+    `check_dataset.py` 등으로 확인할 것.
   - 녹화 fps == round(1/DT_AI_SEC) 이어야 한다 (기본 30). 다르면 생성자에서 오류.
 """
 

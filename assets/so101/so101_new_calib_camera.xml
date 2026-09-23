@@ -110,6 +110,14 @@
                 <geom type="mesh" class="collision" pos="8.32667e-17 -0.000218214 0.000949706" quat="0 1 0 0" mesh="wrist_roll_follower_so101_v1" material="wrist_roll_follower_so101_v1_material"/>
                 <!-- Frame gripperframe -->
                 <site group="3" name="gripperframe" pos="-0.0079 -0.000218121 -0.0981274" quat="0.707107 -0 0.707107 -2.37788e-17"/>
+                <!-- 2026-09-23: 그리퍼(움직이는 조) 대신 5cm 고정 막대 + LED로 0/1 신호 테스트.
+                     실제로는 그리퍼/펌프 신호(설계문서 2절 gripper_signal[0/1])를 이진 트리거로만 쓸
+                     예정이라, moving_jaw는 더 이상 구동하지 않고 gripper 바디에 고정 막대를 붙인다.
+                     gripperframe site 좌표계를 그대로 재사용 — 방향은 근사 배치, 실물/뷰어로 확인 필요. -->
+                <body name="tool_mount" pos="-0.0079 -0.000218121 -0.0981274" quat="0.707107 -0 0.707107 -2.37788e-17">
+                  <geom name="tool_rod" class="visual" type="cylinder" size="0.004 0.025" pos="0 0 0.025" rgba="0.55 0.55 0.55 1"/>
+                  <geom name="tool_led" class="visual" type="sphere" size="0.007" pos="0 0 0.05" rgba="0.3 0.05 0.05 1"/>
+                </body>
                 <!-- Link wrist_camera_mount (Hex-Nut Recess, 32x32 UVC module form factor) -->
                 <body name="wrist_camera_mount" pos="-0.0150 0.0240 -0.0315" quat="0.4997981226682881 -0.5001999599912927 0.4998017973423795 -0.5001999599912927">
                   <inertial pos="0 0 0" mass="0.02" diaginertia="1e-5 1e-5 1e-5"/>

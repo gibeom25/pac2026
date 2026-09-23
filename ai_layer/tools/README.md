@@ -104,18 +104,22 @@ PYTHONPATH=. python ai_layer/tools/record_mujoco.py \
 에피소드 사이 Enter로 다음 녹화 시작(리더를 시작 자세로 되돌릴 시간). 카메라 extrinsic(`wrist` 카메라의
 pos/quat)은 실측 캘리브레이션이 아니라 근사 배치 — 실물과 비교해 보정 필요.
 
-그리퍼는 리더가 `MotorNormMode.RANGE_0_100`(0~100, 각도 아님)이라 5개 관절과 다른 방식으로 리매핑된다
-(`build_joint_remap`). 기본은 리더 0=닫힘/100=열림 가정 — 반대면 `--gripper-invert` 추가.
+**그리퍼는 2026-09-23부터 구동하지 않는다.** 설계문서 2절의 `gripper_signal[0/1]`을 그대로 쓰기로
+해서, MuJoCo 그리퍼 조는 고정값에 묶어두고 리더의 raw 그리퍼 값(`MotorNormMode.RANGE_0_100`, 0~100,
+각도 아님)을 임계값 50으로 이진화해 action/observation의 그리퍼 채널에 그대로 기록한다
+(`gripper_bit()`). 실물 대체 도구(5cm 막대 + LED, `assets/so101/so101_new_calib_camera.xml`의
+`tool_rod`/`tool_led`)로 뷰어에서 켜짐/꺼짐을 눈으로 확인 가능. 기본은 raw>=50 -> 1(켜짐) —
+반대면 `--gripper-invert`.
 
-## check_gripper.py — 그리퍼 리매핑 방향 확인 (2026-09-23, 기범)
+## check_gripper.py — 그리퍼 이진 신호(LED) 확인 (2026-09-23, 기범)
 
-record_mujoco.py로 전체 녹화를 돌리지 않고 리더 그리퍼 방향/범위만 빠르게 확인. 리더를 손으로 열고
-닫으면서 raw(0~100)와 리매핑된 MuJoCo 각도를 실시간 출력한다.
+record_mujoco.py로 전체 녹화를 돌리지 않고 팔 5관절 미러링 + 그리퍼 LED 동작만 빠르게 확인. 리더를
+움직이면 뷰어 속 팔이 따라 움직이고, 그리퍼를 반 이상 닫으면 LED(`tool_led`)가 켜진다.
 
 ```bash
 PYTHONPATH=. python ai_layer/tools/check_gripper.py \
     --leader-port /dev/ttyACM0 --leader-id my_awesome_leader_arm
 ```
 
-닫았을 때 mujoco_deg가 ctrlrange 하한(-10 근처)에, 열었을 때 상한(100 근처)에 붙어야 정상. 반대로
-움직이면 `--gripper-invert`를 붙여 재실행 (record_mujoco.py도 같은 플래그로 맞출 것).
+리더 그리퍼가 닫힘(raw>=50)일 때 LED가 켜지고 열림(raw<50)일 때 꺼져야 정상. 반대로 켜지길 원하면
+`--gripper-invert`를 붙여 재실행 (record_mujoco.py도 같은 플래그로 맞출 것).
