@@ -1,4 +1,4 @@
-<mujoco model="scene_a4">
+<mujoco model="scene_a4_straight">
     <!-- 2026-09-23: so101_new_calib_camera.xml(손목 카메라 포함) + 바닥 + A4 용지(용접선 텍스처).
          scene.xml(원본 so101_new_calib.xml + 바닥)과 같은 패턴, record_mujoco.py/check_gripper.py가
          쓰는 카메라 버전에 A4 용지만 추가한 버전. -->
@@ -19,9 +19,9 @@
         <material name="groundplane" texture="groundplane" texuniform="true" texrepeat="5 5"
             reflectance="0.2" />
 
-        <!-- A4(297x210mm) 용지 + 용접선(완만한 사인 곡선) 텍스처. 긴 축(297mm)이 이미지 가로.
-             textures/a4_weld_seam.png, PIL로 1회 생성 (배경 (245,244,238), 선 (35,30,28) RGB). -->
-        <texture type="2d" name="a4_weld_seam" file="textures/a4_weld_seam_curve.png" />
+        <!-- A4(297x210mm) 용지 + 용접선(straight) 텍스처. 긴 축(297mm)이 이미지 가로.
+             textures/a4_weld_seam_straight.png, PIL로 1회 생성 (배경 (245,244,238), 선 (35,30,28) RGB). -->
+        <texture type="2d" name="a4_weld_seam" file="textures/a4_weld_seam_straight.png" />
         <material name="a4_weld_seam" texture="a4_weld_seam" texuniform="false" specular="0.05" shininess="0.02" />
     </asset>
 

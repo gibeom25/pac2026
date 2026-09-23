@@ -35,7 +35,8 @@ from ai_layer.tools.record_mujoco import (  # noqa: E402
     LED_GEOM_NAME,
     LED_OFF_RGBA,
     LED_ON_RGBA,
-    MJCF_PATH,
+    SCENE_VARIANTS,
+    _mjcf_path,
     _remap_deg,
     build_joint_remap,
     gripper_bit,
@@ -50,6 +51,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--leader-port", default="/dev/ttyACM0")
     p.add_argument("--leader-id", default="my_awesome_leader_arm")
     p.add_argument("--gripper-invert", action="store_true", help="record_mujoco.py와 동일한 플래그")
+    p.add_argument("--scene", choices=SCENE_VARIANTS, default="curve", help="A4 용접선 형태")
     p.add_argument("--hz", type=float, default=30.0, help="제어/출력 주기")
     p.add_argument("--headless", action="store_true", help="뷰어 창 없이 콘솔 출력만 (기본: 창 띄움)")
     return p.parse_args()
@@ -104,12 +106,14 @@ def main() -> None:
     leader.connect(calibrate=True)
     print(f"[check_gripper] leader connected on {args.leader_port} (id={args.leader_id})")
 
-    model = mujoco.MjModel.from_xml_path(str(MJCF_PATH))
+    mjcf_path = _mjcf_path(args.scene)
+    print(f"[check_gripper] scene: {args.scene} ({mjcf_path.name})")
+    model = mujoco.MjModel.from_xml_path(str(mjcf_path))
     data = mujoco.MjData(model)
     mujoco.mj_forward(model, data)
 
     remap = build_joint_remap(leader, model)
-    print("[check_gripper] 그리퍼: 조 구동 안 함, raw>=50 -> LED 켜짐(bit=1)" + (" [반전 켜짐]" if args.gripper_invert else ""))
+    print("[check_gripper] 그리퍼: 조 구동 안 함, raw<50(닫힘) -> LED 켜짐(bit=1)" + (" [반전]" if args.gripper_invert else ""))
     print("[check_gripper] 리더를 움직여보세요 (그리퍼는 반 이상 닫았다/열었다 반복). Ctrl+C로 종료.\n")
 
     try:

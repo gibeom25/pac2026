@@ -7,14 +7,16 @@
 호환된다. 단, 그리퍼 채널은 예외로 항상 0.0/1.0 이진값이다 (설계문서 2절 gripper_signal[0/1] —
 그리퍼 조는 구동하지 않고 고정, MuJoCo에 붙인 LED(tool_led)로 뷰어에서 확인 가능).
 이미지는 MuJoCo 손목 카메라(`so101_new_calib_camera.xml`, `assets/so101/README` 참고)로
-렌더링한다. 씬은 `scene_a4.xml`(위 로봇 파일 + 바닥 + 용접선 그려진 A4 용지, textures/a4_weld_seam.png)을 쓴다.
+렌더링한다. 씬은 `scene_a4_<--scene>.xml`(로봇 파일 + 바닥 + 용접선 그려진 A4 용지, textures/
+a4_weld_seam_<--scene>.png) 중 하나를 고른다 — `--scene` 목록은 SCENE_VARIANTS 참고
+(직선/완만한 곡선/급곡선/코너/분기점/점선).
 
 실행 (pac2026 conda 환경, lerobot 설치되어 있음 — leader 통신용):
   conda activate pac2026
   PYTHONPATH=. python ai_layer/tools/record_mujoco.py \
       --leader-port /dev/ttyACM0 --leader-id my_awesome_leader_arm \
       --repo-id <hf-user>/so101-mujoco-demo --root ./datasets/so101-mujoco-demo \
-      --num-episodes 5 --episode-seconds 15
+      --scene dashed --num-episodes 5 --episode-seconds 15
 
 에피소드 사이에 Enter를 누르면 다음 에피소드 녹화를 시작한다 (리더를 시작 자세로 되돌릴 시간을 준다).
 Ctrl+C로 중단하면 그때까지 저장된 에피소드는 유지된다.
@@ -40,9 +42,15 @@ from lerobot.datasets.utils import build_dataset_frame, hw_to_dataset_features  
 from lerobot.teleoperators.so_leader.config_so_leader import SOLeaderTeleopConfig  # noqa: E402
 from lerobot.teleoperators.so_leader.so_leader import SOLeader  # noqa: E402
 
-MJCF_PATH = Path(__file__).resolve().parents[2] / "assets" / "so101" / "scene_a4.xml"
+ASSETS_DIR = Path(__file__).resolve().parents[2] / "assets" / "so101"
+SCENE_VARIANTS = ["curve", "straight", "sharp_curve", "corner", "branch", "dashed"]
 CAMERA_NAME = "wrist"
 CAMERA_HW = (240, 320, 3)
+
+
+def _mjcf_path(scene: str) -> Path:
+    name = "scene_a4.xml" if scene == "curve" else f"scene_a4_{scene}.xml"
+    return ASSETS_DIR / name
 
 # 2026-09-23: 그리퍼(움직이는 조)는 더 이상 구동하지 않는다 — 설계문서 2절의 gripper_signal[0/1]을
 # 그대로 이진 트리거로 기록한다 (실제로는 그리퍼가 아니라 펌프/도구 on-off일 가능성이 큼, docs 3.4절
@@ -52,6 +60,31 @@ GRIPPER_RAW_THRESHOLD = 50.0  # leader RANGE_0_100 값 기준 이진화 임계�
 LED_GEOM_NAME = "tool_led"
 LED_ON_RGBA = (0.15, 0.95, 0.15, 1.0)
 LED_OFF_RGBA = (0.3, 0.05, 0.05, 1.0)
+
+# 2026-09-23: 신호 on(bit=1) 동안 tool_led 위치에 그리스/실리콘 비드처럼 자국을 남긴다 — LED 깜빡임보다
+# "실제로 무언가를 짜고 있다"는 게 더 직관적으로 보이고, 렌더된 손목 카메라 이미지에도 남아서(뷰어 전용이
+# 아님) BC가 이미 도포된 구간을 시각적으로 구분할 수 있다. mjv_initGeom으로 씬에 시각 전용 geom을 얹는
+# 방식이라 물리에는 전혀 영향 없다 (mujoco.Renderer.scene / viewer.user_scn 둘 다 지원).
+BEAD_RGBA = np.array([0.72, 0.72, 0.76, 1.0], dtype=np.float32)
+BEAD_RADIUS = 0.0025  # 2.5mm
+BEAD_STRIDE = 2  # 몇 스텝마다 한 점 찍을지 (매 스텝이면 점이 너무 촘촘해져 뭉개짐)
+
+
+def _draw_bead_trail(scene, points: list[np.ndarray]) -> None:
+    """축적된 비드 자국(world xyz 리스트)을 시각 전용 geom으로 씬에 얹는다.
+
+    scene.ngeom을 리셋하지 않고 이어서 채운다 — renderer.scene은 update_scene() 직후(이미 모델 geom들로
+    ngeom이 채워진 상태) 호출하고, viewer.user_scn은 매 프레임 호출 전에 ngeom=0으로 직접 리셋해야 한다
+    (그래야 매번 전체 궤적을 다시 그리지, 프레임마다 누적 중복되지 않는다).
+    """
+    size = np.array([BEAD_RADIUS, 0.0, 0.0])
+    mat = np.eye(3).flatten()
+    for p in points:
+        if scene.ngeom >= scene.maxgeom:
+            break
+        g = scene.geoms[scene.ngeom]
+        mujoco.mjv_initGeom(g, type=mujoco.mjtGeom.mjGEOM_SPHERE, size=size, pos=p, mat=mat, rgba=BEAD_RGBA)
+        scene.ngeom += 1
 
 
 def parse_args() -> argparse.Namespace:
@@ -64,6 +97,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--num-episodes", type=int, default=5)
     p.add_argument("--episode-seconds", type=float, default=15.0)
     p.add_argument("--task", default="weld seam following demo (mujoco mirror)")
+    p.add_argument("--scene", choices=SCENE_VARIANTS, default="curve", help="A4 용접선 형태")
     p.add_argument("--headless", action="store_true", help="라이브 뷰어 창 없이 실행 (기본: 창 띄움)")
     p.add_argument(
         "--gripper-invert",
@@ -215,6 +249,7 @@ def _run(
         input(f"\n[record] 에피소드 {ep + 1}/{args.num_episodes} — 준비되면 Enter (Ctrl+C 종료) ")
         mujoco.mj_resetData(model, data)
         mujoco.mj_forward(model, data)
+        bead_points: list[np.ndarray] = []  # 에피소드(=새 용지)마다 비드 자국 초기화
 
         t0 = time.perf_counter()
         n_steps = int(args.episode_seconds * args.fps)
@@ -234,7 +269,12 @@ def _run(
             for _ in range(substeps):
                 mujoco.mj_step(model, data)
 
+            if bit and step % BEAD_STRIDE == 0:
+                bead_points.append(data.geom_xpos[led_gid].copy())
+
             if viewer is not None:
+                viewer.user_scn.ngeom = 0
+                _draw_bead_trail(viewer.user_scn, bead_points)
                 viewer.sync()
                 if not viewer.is_running():
                     print("[record] 뷰어 창이 닫혀서 중단합니다.")
@@ -243,6 +283,7 @@ def _run(
             state_deg = {name: float(np.rad2deg(data.qpos[i])) for i, name in enumerate(JOINT_NAMES)}
 
             renderer.update_scene(data, camera=CAMERA_NAME)
+            _draw_bead_trail(renderer.scene, bead_points)
             img = renderer.render()
 
             # 그리퍼 채널은 관절각 대신 이진 신호(0.0/1.0)를 기록 — 조는 고정이라 qpos는 의미 없음.
@@ -276,7 +317,9 @@ def main() -> None:
     leader.connect(calibrate=True)
     print(f"[record] leader connected on {args.leader_port} (id={args.leader_id})")
 
-    model = mujoco.MjModel.from_xml_path(str(MJCF_PATH))
+    mjcf_path = _mjcf_path(args.scene)
+    print(f"[record] scene: {args.scene} ({mjcf_path.name})")
+    model = mujoco.MjModel.from_xml_path(str(mjcf_path))
     data = mujoco.MjData(model)
     renderer = mujoco.Renderer(model, height=CAMERA_HW[0], width=CAMERA_HW[1])
     mujoco.mj_forward(model, data)
