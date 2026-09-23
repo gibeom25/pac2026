@@ -8,6 +8,14 @@
 kinematic(물리 반응 없음)이고, 실제 물리 바디(ee_body, freejoint)가 weld로 그 뒤를 따라가며
 바닥에 닿으면 진짜 반발력이 생긴다(ee_rig.xml 참고, 안정성 검증 완료).
 
+2026-09-23(3차, 최종): roll/pitch/yaw는 베이스 6개 버튼(joystick_input.rotation_rate())으로
+레이트 컨트롤한다. mocap_target이 위치+회전을 같이 명령하고, ee_body는 weld+접촉 반발력으로
+그 뒤를 따라간다 — "바닥에 실제로 닿는 것"은 이제 실패 조건이다(막대가 바닥/용지에 닿으면
+그 자리에서 자동으로 에피소드를 폐기한다, BTN_THUMB2와 동일 경로). 도구는 표면에 닿지 않고
+일정 간격을 띄운 채로 작업해야 한다. 비드(실리콘)는 접촉 여부와 무관하게 **신호(BTN_TRIGGER)만
+켜져 있으면** 찍히되, 중력의 영향을 받아 도구 끝이 아니라 바로 아래 바닥/용지 면에 떨어진
+자리에 찍힌다(수직으로만 낙하하는 단순화 — 실제 유체 시뮬레이션 아님).
+
 데이터셋은 관절공간이 아니라 EE-native 포맷으로 직접 기록한다 (더 이상 관절이 없으므로):
   observation.state (9,) = [x, y, z, rot6d(6)]       -- kinematics.pose_to_state와 동일 표현
   observation.images.wrist                            -- 렌더링된 손목 카메라
@@ -23,12 +31,12 @@ kinematic(물리 반응 없음)이고, 실제 물리 바디(ee_body, freejoint)�
       --repo-id <hf-user>/so101-mujoco-demo --root ./datasets/so101-mujoco-demo \
       --scene dashed --num-episodes 5
 
-BTN_TRIGGER를 누르고 있는 동안 그리퍼/도구 신호=1, 막대가 실제로 바닥/용지에 닿아 있을 때만
-그 접촉점에 비드가 찍힌다(신호만 켜져 있고 떠 있으면 안 찍힘). 에피소드는 기본적으로 길이
-제한 없이 계속되고, **BTN_THUMB를 누르면 그 자리에서 바로 저장하고 종료** — 시간을 못 박아두고
-기다릴 필요 없이 다 그렸을 때 직접 끝낸다(원하면 --episode-seconds로 상한을 줄 수도 있음).
-끝나면 EE 위치/자세가 바로 홈으로 초기화된다. 에피소드 사이에 Enter를 누르면 다음 녹화를
-시작한다. Ctrl+C로 중단하면 그때까지 저장된 에피소드는 유지된다.
+BTN_TRIGGER를 누르고 있는 동안 그리퍼/도구 신호=1이고 비드가 찍힌다(높이 무관). 막대가 바닥에
+닿으면 그 즉시 에피소드가 자동 폐기되고 같은 번호로 재시도한다. 에피소드는 기본적으로 길이
+제한 없이 계속되고, **BTN_THUMB를 누르면 그 자리에서 바로 저장하고 종료**, **BTN_THUMB2를
+누르면 폐기하고 재시도**한다(원하면 --episode-seconds로 자동 종료 상한도 줄 수 있음). 끝나면
+EE 위치/자세가 바로 홈으로 초기화된다. 에피소드 사이에 Enter를 누르면 다음 녹화를 시작한다.
+Ctrl+C로 중단하면 그때까지 저장된 에피소드는 유지된다.
 """
 
 from __future__ import annotations
@@ -50,6 +58,7 @@ from ai_layer.tools.joystick_input import JoystickEEController  # noqa: E402
 
 from lerobot.datasets.lerobot_dataset import LeRobotDataset  # noqa: E402
 from lerobot.datasets.utils import build_dataset_frame, hw_to_dataset_features  # noqa: E402
+from lerobot.utils.rotation import Rotation  # noqa: E402
 
 ASSETS_DIR = Path(__file__).resolve().parents[2] / "assets" / "so101"
 SCENE_VARIANTS = ["curve", "straight", "sharp_curve", "corner", "branch", "dashed"]
@@ -79,8 +88,13 @@ WORKSPACE_Y = (-0.20, 0.20)
 WORKSPACE_Z = (-0.02, 0.35)
 
 MOCAP_HOME = np.array([0.25, 0.0, 0.15])
+IDENTITY_QUAT = np.array([1.0, 0.0, 0.0, 0.0])
+MAX_ANGULAR_SPEED_DEFAULT = 1.0  # rad/s, 베이스 버튼 레이트 컨트롤 기본 최대 각속도
 
-# 2026-09-23: 신호 on(1) + 막대-바닥 접촉 동안 접촉점에 그리스/실리콘 비드처럼 자국을 남긴다.
+# 2026-09-23(3차): 신호(BTN_TRIGGER) on인 동안 비드를 찍는다 — 더 이상 접촉 여부/높이와 무관.
+# "실리콘이 중력의 영향을 받는다"를 진짜 유체 시뮬레이션 없이 단순화: 비드는 도구 끝이 아니라
+# 그 바로 아래 바닥/용지 면(FLOOR_Z, 수직 낙하만 가정)에 찍힌다 — 도구가 표면에서 떨어져 있어도
+# (오히려 이제는 떨어져 있어야 함, 닿으면 실패) 흘러내린 재료는 바닥에 떨어진다는 뜻.
 # 렌더된 손목 카메라 이미지에도 남아서(뷰어 전용이 아님) BC가 이미 도포된 구간을 시각적으로
 # 구분할 수 있다. mjv_initGeom으로 씬에 시각 전용 geom을 얹는 방식이라 이 자국 자체는 물리에
 # 영향 없다 (mujoco.Renderer.scene / viewer.user_scn 둘 다 지원).
@@ -93,6 +107,13 @@ BEAD_SHININESS = 0.15
 BEAD_REFLECTANCE = 0.05
 BEAD_RADIUS = 0.0018  # 1.8mm — 촘촘한 간격과 겹쳐 매끈하게 이어진 비드처럼 보이게 살짝 키움
 BEAD_STRIDE = 1  # 매 스텝 찍음 — 점 간격이 구슬 반지름보다 촘촘해져 거의 이어진 선처럼 보임
+FLOOR_Z = BEAD_RADIUS  # 바닥(world z=0) 위에 비드 구슬이 파묻히지 않고 얹혀 보이는 높이
+
+
+def _rotmat_to_mujoco_quat(R: np.ndarray) -> np.ndarray:
+    """3x3 회전행렬 -> MuJoCo quat [w,x,y,z] (scipy/lerobot Rotation은 [x,y,z,w])."""
+    x, y, z, w = Rotation.from_matrix(R).as_quat()
+    return np.array([w, x, y, z])
 
 
 def _mjcf_path(scene: str, variant: int = 0) -> Path:
@@ -132,13 +153,6 @@ def _contact_pos(data, gid_a: int, gid_b: int) -> np.ndarray | None:
     return None
 
 
-def _yaw_quat(yaw: float) -> np.ndarray:
-    """world z축 기준 yaw 회전 -> MuJoCo quat [w,x,y,z]. mocap_target은 pitch/roll을 안 가짐 —
-    ee_body가 weld+접촉 반발력으로 알아서 기울고(_ee_pose_xyzrotvec으로 실측 기록), mocap은
-    조이스틱 트위스트로 명령한 yaw만 목표로 준다."""
-    return np.array([np.cos(yaw / 2), 0.0, 0.0, np.sin(yaw / 2)])
-
-
 def _ee_pose_xyzrotvec(data, ee_bid: int) -> np.ndarray:
     """ee_body의 실측 world pose(회전은 data.xmat, 별도 FK 없음) -> (6,) [xyz, rotvec]."""
     T = np.eye(4)
@@ -167,11 +181,13 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument("--headless", action="store_true", help="라이브 뷰어 창 없이 실행 (기본: 창 띄움)")
     p.add_argument("--max-linear-speed", type=float, default=0.05, help="조이스틱 최대 EE 속도 [m/s]")
-    p.add_argument("--max-angular-speed", type=float, default=1.0, help="조이스틱 트위스트 최대 yaw 각속도 [rad/s]")
+    p.add_argument(
+        "--max-angular-speed", type=float, default=MAX_ANGULAR_SPEED_DEFAULT,
+        help="베이스 버튼(roll/pitch/yaw) 최대 각속도 [rad/s]",
+    )
     p.add_argument("--invert-x", action="store_true", help="EE x축 방향 반전")
     p.add_argument("--invert-y", action="store_true", help="EE y축 방향 반전")
     p.add_argument("--invert-z", action="store_true", help="EE z축 방향 반전")
-    p.add_argument("--invert-yaw", action="store_true", help="트위스트 yaw 방향 반전")
     return p.parse_args()
 
 
@@ -261,12 +277,13 @@ def _run(args: argparse.Namespace, ctl: JoystickEEController, model, data, rende
         input(f"\n[record] 에피소드 {saved_count + 1}/{args.num_episodes} — 준비되면 Enter (Ctrl+C 종료) ")
         mujoco.mj_resetData(model, data)
         target_pos = MOCAP_HOME.copy()
-        yaw = 0.0
+        R_cmd = np.eye(3)
         data.mocap_pos[mocap_idx] = target_pos
-        data.mocap_quat[mocap_idx] = _yaw_quat(yaw)
+        data.mocap_quat[mocap_idx] = IDENTITY_QUAT
         mujoco.mj_forward(model, data)
         bead_points: list[np.ndarray] = []
         prev_pose: np.ndarray | None = None
+        floor_touched = False
 
         t0 = time.perf_counter()
         max_steps = int(args.episode_seconds * args.fps) if args.episode_seconds else None
@@ -286,16 +303,22 @@ def _run(args: argparse.Namespace, ctl: JoystickEEController, model, data, rende
             target_pos[1] = float(np.clip(target_pos[1], *WORKSPACE_Y))
             target_pos[2] = float(np.clip(target_pos[2], *WORKSPACE_Z))
             data.mocap_pos[mocap_idx] = target_pos
-            yaw += ctl.yaw_rate(max_angular=args.max_angular_speed, invert=args.invert_yaw) * dt
-            data.mocap_quat[mocap_idx] = _yaw_quat(yaw)
+
+            wx, wy, wz = ctl.rotation_rate(max_angular=args.max_angular_speed)
+            if wx or wy or wz:
+                R_cmd = Rotation.from_rotvec(np.array([wx, wy, wz]) * dt).as_matrix() @ R_cmd
+            data.mocap_quat[mocap_idx] = _rotmat_to_mujoco_quat(R_cmd)
             bit = ctl.gripper_bit()
 
             for _ in range(substeps):
                 mujoco.mj_step(model, data)
 
             contact_pos = _contact_pos(data, rod_gid, floor_gid)
-            if bit and contact_pos is not None and step % BEAD_STRIDE == 0:
-                bead_points.append(contact_pos)
+            if contact_pos is not None:
+                floor_touched = True  # 표면에 닿음 = 실패 조건 (아래서 폐기 처리)
+            if bit and step % BEAD_STRIDE == 0:
+                tip = data.geom_xpos[rod_gid]
+                bead_points.append(np.array([tip[0], tip[1], FLOOR_Z]))  # 중력: 도구 높이 무관, 바로 아래 바닥면에 낙하
 
             if viewer is not None:
                 viewer.user_scn.ngeom = 0
@@ -331,9 +354,16 @@ def _run(args: argparse.Namespace, ctl: JoystickEEController, model, data, rende
                     f"  | trigger={bit:.0f} 막대={touching} 비드={len(bead_points)}점"
                 )
 
-            discard = ctl.discard_requested()
+            discard_btn = ctl.discard_requested()  # 엣지 트리거라 이 프레임에 한 번만 호출/소비
+            discard = discard_btn or floor_touched
             if discard or ctl.episode_end_requested():
-                print(f"\n[record] {'BTN_THUMB2 눌림 — 폐기' if discard else 'BTN_THUMB 눌림 — 종료'}.")
+                if floor_touched:
+                    reason = "막대가 바닥/용지에 닿음 — 자동 폐기"
+                elif discard_btn:
+                    reason = "BTN_THUMB2 눌림 — 폐기"
+                else:
+                    reason = "BTN_THUMB 눌림 — 종료"
+                print(f"\n[record] {reason}.")
                 step += 1
                 break
 
@@ -357,7 +387,7 @@ def _run(args: argparse.Namespace, ctl: JoystickEEController, model, data, rende
         # 사이엔 마지막 위치에 멈춰 있던 채로 보였음).
         mujoco.mj_resetData(model, data)
         data.mocap_pos[mocap_idx] = MOCAP_HOME.copy()
-        data.mocap_quat[mocap_idx] = _yaw_quat(0.0)
+        data.mocap_quat[mocap_idx] = IDENTITY_QUAT
         mujoco.mj_forward(model, data)
         if viewer is not None:
             viewer.user_scn.ngeom = 0

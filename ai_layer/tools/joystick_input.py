@@ -13,6 +13,13 @@ evdev.InputDevice.capabilities()로 직접 읽음 — 추측 아님):
   ABS_RZ (0~255, center ~128)      트위스트 -> 예약(회전), v1은 미사용 (ZERO_YAW 결정과 일치)
   ABS_HAT0X/ABS_HAT0Y (-1/0/1)     POV 햇스위치, v1은 미사용
   BTN_TRIGGER(288)                 누르는 동안 그리퍼/도구 신호 = 1 (임계값 없이 즉시 반영)
+  BTN_BASE/BTN_BASE2(294/295)      누르는 동안 roll -/+ 각속도
+  BTN_BASE3/BTN_BASE4(296/297)     누르는 동안 pitch -/+ 각속도
+  BTN_BASE5/BTN_BASE6(298/299)     누르는 동안 yaw -/+ 각속도
+
+2026-09-23(2차): roll/pitch/yaw는 트위스트 대신 베이스의 6개 버튼(rotation_rate())으로 조절한다
+(레이트 컨트롤 — 누르고 있는 동안만 회전, throttle과 같은 방식). mocap_target이 위치+전체 회전을
+같이 명령하고, ee_body는 weld+접촉 반발력으로 따라간다.
 
 방향(좌우/전후 부호)은 실제로 스틱을 움직여보고 뷰어에서 확인해야 한다 — 반대면 부호만 뒤집을 것
 (ee_velocity()의 vx/vy 계산 부분).
@@ -235,16 +242,22 @@ class JoystickEEController:
         """
         return self._rising_edge(ecodes.BTN_THUMB2)
 
-    def yaw_rate(self, max_angular: float = 1.0, invert: bool = False) -> float:
-        """트위스트(ABS_RZ) -> yaw 각속도 [rad/s]. mocap_target의 yaw 목표를 이 값으로 적분한다.
+    def rotation_rate(self, max_angular: float = 1.0) -> tuple[float, float, float]:
+        """베이스 버튼 6개(레이트 컨트롤, 누르는 동안만) -> world-frame 각속도 (wx, wy, wz) [rad/s].
 
-        pitch/roll은 조이스틱으로 직접 명령하지 않는다 — mocap_target은 위치+yaw만 갖고, 실제
-        물리 바디(ee_body)가 weld로 그 뒤를 따라가다가 접촉 반발력을 받으면 자연스럽게 기운다
-        (2026-09-23 결정: "접점에 따라 알아서 회전"). 평평한 용지 위에서는 거의 항상 수직이고,
-        나중에 3D 그루브가 있는 실제 워크피스를 쓰면 접촉면 기울기 따라 자연스럽게 기울게 된다.
+        BTN_BASE/BASE2 = roll -/+, BASE3/BASE4 = pitch -/+, BASE5/BASE6 = yaw -/+. 양쪽을 동시에
+        누르면 0(상쇄). kinematics.apply_pose_delta와 같은 world-frame 왼쪽곱 합성 규약을 쓴다 —
+        record_mujoco.py가 Rotation.from_rotvec(w*dt) @ R_cmd 로 적분한다.
         """
-        w = self.state.twist * max_angular
-        return -w if invert else w
+
+        def axis(neg_code: int, pos_code: int) -> float:
+            b = self.state.buttons
+            return (1.0 if b.get(pos_code, False) else 0.0) - (1.0 if b.get(neg_code, False) else 0.0)
+
+        wx = axis(ecodes.BTN_BASE, ecodes.BTN_BASE2) * max_angular
+        wy = axis(ecodes.BTN_BASE3, ecodes.BTN_BASE4) * max_angular
+        wz = axis(ecodes.BTN_BASE5, ecodes.BTN_BASE6) * max_angular
+        return wx, wy, wz
 
     def close(self) -> None:
         self.dev.close()
