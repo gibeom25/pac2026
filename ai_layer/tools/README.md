@@ -116,21 +116,24 @@ pos/quat)은 실측 캘리브레이션이 아니라 근사 배치 — 실물과 
 **그리퍼는 2026-09-23부터 구동하지 않는다.** 설계문서 2절의 `gripper_signal[0/1]`을 그대로 쓰기로
 해서, MuJoCo 그리퍼 조는 닫힘 위치에 고정해두고 리더의 raw 그리퍼 값(`MotorNormMode.RANGE_0_100`,
 0~100, 각도 아님)을 임계값 50으로 이진화해 action/observation의 그리퍼 채널에 그대로 기록한다
-(`gripper_bit()`, leader 기준 raw<50=닫힘=1). 신호 on(1)인 동안 손목에 붙인 5cm 막대(`tool_rod`) 끝
-(`tool_led`, `so101_new_calib_camera.xml`)에서 **그리스/실리콘 비드처럼 작은 점들의 자국을 남긴다**
-(`BEAD_RGBA`/`BEAD_RADIUS`/`BEAD_STRIDE`) — LED 색(빨강/초록)은 현재 on/off 상태, 비드 자국은 지금까지
-지나온 궤적의 누적 기록. 렌더된 손목 카메라 이미지에도 남기 때문에(뷰어 전용 아님) BC가 이미 도포된
-구간을 시각적으로 구분할 수 있다. 기본은 raw<50 -> 1(닫힘/켜짐) — 반대면 `--gripper-invert`.
+(`gripper_bit()`, leader 기준 raw<50=닫힘=1). 손목엔 얇은(반지름 1.5mm) 5cm 막대(`tool_rod`)가 달려
+있고, **바닥/용지와 실제로 물리 충돌한다**(`tool_rod`는 전용 충돌 채널 bit1로 격리 — 로봇 자신의
+collision 메시와는 안 부딪힘). 신호 on(1)이면서 막대가 실제 접촉 중일 때만(`_contact_pos()`,
+`mj_contactForce` 기반) 접촉점에 **그리스/실리콘 비드처럼 작은 점 자국을 남긴다**
+(`BEAD_RGBA`/`BEAD_RADIUS`/`BEAD_STRIDE`) — 신호만 켜져 있고 막대가 떠 있으면 찍히지 않는다.
+렌더된 손목 카메라 이미지에도 남기 때문에(뷰어 전용 아님) BC가 이미 도포된 구간을 시각적으로 구분할
+수 있다. 기본은 raw<50 -> 1(닫힘) — 반대면 `--gripper-invert`.
 
-## check_gripper.py — 그리퍼 이진 신호(LED+비드) 확인 (2026-09-23, 기범)
+## check_gripper.py — 그리퍼 이진 신호 + 접촉 기반 비드 확인 (2026-09-23, 기범)
 
-record_mujoco.py로 전체 녹화를 돌리지 않고 팔 5관절 미러링 + 그리퍼 LED 동작만 빠르게 확인. 리더를
-움직이면 뷰어 속 팔이 따라 움직이고, 그리퍼를 반 이상 닫으면 LED(`tool_led`)가 켜진다.
+record_mujoco.py로 전체 녹화를 돌리지 않고 팔 5관절 미러링 + 그리퍼 비드 동작만 빠르게 확인. 리더를
+움직이면 뷰어 속 팔이 따라 움직이고, 그리퍼를 반 이상 닫은 채로 막대를 종이/바닥에 대면 그 자리에
+비드가 찍힌다.
 
 ```bash
 PYTHONPATH=. python ai_layer/tools/check_gripper.py \
     --leader-port /dev/ttyACM0 --leader-id my_awesome_leader_arm
 ```
 
-리더 그리퍼가 닫힘(raw>=50)일 때 LED가 켜지고 열림(raw<50)일 때 꺼져야 정상. 반대로 켜지길 원하면
-`--gripper-invert`를 붙여 재실행 (record_mujoco.py도 같은 플래그로 맞출 것).
+리더 그리퍼가 닫힘(raw<50)이고 막대가 바닥에 닿아 있을 때만 비드가 쌓여야 정상. 그리퍼 방향이
+반대면 `--gripper-invert`를 붙여 재실행 (record_mujoco.py도 같은 플래그로 맞출 것).
