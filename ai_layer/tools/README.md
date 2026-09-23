@@ -109,10 +109,10 @@ home 자세, 2초 드리프트, 경로 영역 안 이동/회전 추종(정지 �
 1, 임계값 없음). x/z 기본 부호는 실사용 확인 후 반전해뒀다 — 반대로 느껴지면
 `--invert-x/--invert-y/--invert-z`로 바로 뒤집을 것(`record_mujoco.py`/`check_ee.py` 둘 다 지원).
 
-**roll/pitch/yaw는 베이스의 6개 버튼(레이트 컨트롤, `rotation_rate()`)으로 조절한다**
-(2026-09-23 최종 결정 — 트위스트 축이나 물리 전용 자동 반영 대신): `BTN_BASE`/`BTN_BASE2` =
-roll -/+, `BTN_BASE3`/`BTN_BASE4` = pitch -/+, `BTN_BASE5`/`BTN_BASE6` = yaw -/+. throttle처럼
-누르고 있는 동안만 그 방향으로 회전한다. `--max-angular-speed`(기본 1.0 rad/s)로 속도 조절.
+**roll/pitch는 베이스 버튼, yaw는 트위스트 축으로 조절한다** (`rotation_rate()`, 2026-09-23
+최종 결정): `BTN_BASE`/`BTN_BASE2` = roll -/+, `BTN_BASE3`/`BTN_BASE4` = pitch -/+ (throttle처럼
+누르고 있는 동안만 그 방향으로 회전, 레이트 컨트롤) / `ABS_RZ`(트위스트) = yaw 각속도(연속값 —
+손목을 실제로 돌리는 축이라 버튼보다 자연스러움). `--max-angular-speed`(기본 1.0 rad/s)로 속도 조절.
 
 ```bash
 PYTHONPATH=. python ai_layer/tools/joystick_input.py [--list]
