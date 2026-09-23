@@ -158,11 +158,29 @@ class JoystickEEController:
                     if e.code == ecodes.BTN_TRIGGER:
                         self.state.trigger = bool(e.value)
 
-    def ee_velocity(self, max_linear: float = 0.05) -> tuple[float, float, float]:
-        """(vx, vy, vz) m/s. 방향 부호는 실제로 확인 후 필요하면 뒤집을 것."""
+    def ee_velocity(
+        self,
+        max_linear: float = 0.05,
+        invert_x: bool = False,
+        invert_y: bool = False,
+        invert_z: bool = False,
+    ) -> tuple[float, float, float]:
+        """(vx, vy, vz) m/s.
+
+        2026-09-23: 실사용 확인 결과 z가 뒤집혀 있어(슬라이더 밀면 내려가야 할 방향이 반대) 기본
+        부호를 반전. x/y는 실제 어느 쪽이 반대인지 애매해서(사람마다 스틱 잡는 방향 체감이 다를 수
+        있음) --invert-x/--invert-y로 바로 뒤집어 테스트할 수 있게 열어둠 — check_ee.py로
+        `target=(x,y,z)`가 스틱 방향과 맞는지 보고 필요한 쪽만 켤 것.
+        """
         vx = self.state.y * max_linear  # 스틱 전방 = +x
         vy = -self.state.x * max_linear  # 스틱 오른쪽 = -y
-        vz = self.state.throttle * max_linear
+        vz = -self.state.throttle * max_linear  # 슬라이더 밀면(+) 아래로(-z) 가도록 반전
+        if invert_x:
+            vx = -vx
+        if invert_y:
+            vy = -vy
+        if invert_z:
+            vz = -vz
         return vx, vy, vz
 
     def gripper_bit(self) -> float:

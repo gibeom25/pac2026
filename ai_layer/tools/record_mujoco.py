@@ -129,6 +129,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--scene", choices=SCENE_VARIANTS, default="curve", help="A4 용접선 형태")
     p.add_argument("--headless", action="store_true", help="라이브 뷰어 창 없이 실행 (기본: 창 띄움)")
     p.add_argument("--max-linear-speed", type=float, default=0.05, help="조이스틱 최대 EE 속도 [m/s]")
+    p.add_argument("--invert-x", action="store_true", help="EE x축 방향 반전")
+    p.add_argument("--invert-y", action="store_true", help="EE y축 방향 반전")
+    p.add_argument("--invert-z", action="store_true", help="EE z축 방향 반전")
     return p.parse_args()
 
 
@@ -228,7 +231,12 @@ def _run(args: argparse.Namespace, ctl: JoystickEEController, model, data, rende
             loop_t0 = time.perf_counter()
 
             ctl.poll()
-            vx, vy, vz = ctl.ee_velocity(max_linear=args.max_linear_speed)
+            vx, vy, vz = ctl.ee_velocity(
+                max_linear=args.max_linear_speed,
+                invert_x=args.invert_x,
+                invert_y=args.invert_y,
+                invert_z=args.invert_z,
+            )
             target_pos = target_pos + np.array([vx, vy, vz]) * dt
             target_pos[0] = float(np.clip(target_pos[0], *WORKSPACE_X))
             target_pos[1] = float(np.clip(target_pos[1], *WORKSPACE_Y))

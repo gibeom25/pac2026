@@ -50,12 +50,25 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="조이스틱 -> MuJoCo EE 리그 실시간 뷰어 (방향/접촉 확인).")
     p.add_argument("--scene", choices=SCENE_VARIANTS, default="curve", help="A4 용접선 형태")
     p.add_argument("--max-linear-speed", type=float, default=0.05, help="조이스틱 최대 EE 속도 [m/s]")
+    p.add_argument("--invert-x", action="store_true", help="EE x축 방향 반전")
+    p.add_argument("--invert-y", action="store_true", help="EE y축 방향 반전")
+    p.add_argument("--invert-z", action="store_true", help="EE z축 방향 반전")
     p.add_argument("--hz", type=float, default=30.0, help="제어/출력 주기")
     p.add_argument("--headless", action="store_true", help="뷰어 창 없이 콘솔 출력만 (기본: 창 띄움)")
     return p.parse_args()
 
 
-def _run(ctl: JoystickEEController, model, data, viewer, max_linear_speed: float, hz: float) -> None:
+def _run(
+    ctl: JoystickEEController,
+    model,
+    data,
+    viewer,
+    max_linear_speed: float,
+    hz: float,
+    invert_x: bool = False,
+    invert_y: bool = False,
+    invert_z: bool = False,
+) -> None:
     dt = 1.0 / hz
     substeps = max(1, int(round(dt / model.opt.timestep)))
 
@@ -75,7 +88,9 @@ def _run(ctl: JoystickEEController, model, data, viewer, max_linear_speed: float
         loop_t0 = time.perf_counter()
 
         ctl.poll()
-        vx, vy, vz = ctl.ee_velocity(max_linear=max_linear_speed)
+        vx, vy, vz = ctl.ee_velocity(
+            max_linear=max_linear_speed, invert_x=invert_x, invert_y=invert_y, invert_z=invert_z
+        )
         target_pos = target_pos + np.array([vx, vy, vz]) * dt
         target_pos[0] = float(np.clip(target_pos[0], *WORKSPACE_X))
         target_pos[1] = float(np.clip(target_pos[1], *WORKSPACE_Y))
@@ -128,12 +143,13 @@ def main() -> None:
 
     print("[check_ee] 스틱/슬라이더로 EE를 움직여보고, 트리거+막대 접촉으로 비드를 확인하세요. Ctrl+C로 종료.\n")
 
+    invert_kwargs = dict(invert_x=args.invert_x, invert_y=args.invert_y, invert_z=args.invert_z)
     try:
         if args.headless:
-            _run(ctl, model, data, viewer=None, max_linear_speed=args.max_linear_speed, hz=args.hz)
+            _run(ctl, model, data, viewer=None, max_linear_speed=args.max_linear_speed, hz=args.hz, **invert_kwargs)
         else:
             with mujoco.viewer.launch_passive(model, data) as viewer:
-                _run(ctl, model, data, viewer, args.max_linear_speed, args.hz)
+                _run(ctl, model, data, viewer, args.max_linear_speed, args.hz, **invert_kwargs)
     except KeyboardInterrupt:
         print("\n[check_ee] 종료.")
     finally:
