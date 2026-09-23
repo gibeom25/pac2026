@@ -94,7 +94,14 @@ def main() -> int:
         report(inside and looks_deg, f"{jn}: [{mn:.1f}, {mx:.1f}]  URDF 한계 [{lo:.0f}, {hi:.0f}] deg" +
                ("" if looks_deg else "  ← 라디안처럼 보임 (use_degrees=true 확인)"))
     g = state[:, -1]
-    report(0 <= g.min() and g.max() <= 100, f"gripper: [{g.min():.1f}, {g.max():.1f}] (기대 0~100)")
+    robot_type = getattr(meta, "robot_type", None) or meta.info.get("robot_type", "")
+    if "mujoco" in str(robot_type):
+        # record_mujoco.py: 그리퍼도 MuJoCo 관절 각도(deg, ctrlrange ≈ -10~100)로 기록됨
+        report(-15 <= g.min() and g.max() <= 105, f"gripper: [{g.min():.1f}, {g.max():.1f}] deg (MuJoCo 미러 데이터, ctrlrange -10~100)")
+    else:
+        # 실물 lerobot-record: RANGE_0_100 정규화
+        report(0 <= g.min() and g.max() <= 100, f"gripper: [{g.min():.1f}, {g.max():.1f}] (실물 녹화 기대 0~100)")
+    print(f"   robot_type={robot_type!r} — 실물과 MuJoCo 데이터는 그리퍼 단위가 달라 섞어 학습하면 안 됨")
 
     # 5. 에피소드/timestamp
     ep_idx = np.asarray(hf["episode_index"]).reshape(-1)
