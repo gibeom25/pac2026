@@ -158,6 +158,15 @@ PYTHONPATH=. python ai_layer/tools/record_mujoco.py \
 차면 자동 종료). 에피소드가 끝나면 EE 위치/자세가 즉시 홈으로 리셋되고(뷰어에도 바로 반영),
 Enter로 다음 에피소드를 시작한다.
 
+## bench_inference.py — 추론 지연 벤치마크 (시연 PC 비교용)
+
+```bash
+PYTHONPATH=. python ai_layer/tools/bench_inference.py --checkpoint outputs/bc_act/last   # 또는 --synthetic
+```
+
+seam/전처리/ACT forward/후처리/인코딩/끝-끝 p50·p95·max, 첫 추론 워밍업, 제어 max_age 300 ms 대비 여유를 찍는다.
+2026-09-23 A6000: 끝-끝 p50 9.3 / p95 14.6 ms. 다른 PC(5090 등)에서 같은 명령으로 재면 바로 비교된다.
+
 **실수했으면 `BTN_THUMB2`로 폐기** — 지금까지 그 에피소드에 쌓인 프레임(이미지 포함)을
 `dataset.clear_episode_buffer()`로 버리고 같은 에피소드 번호를 다시 시도한다(에피소드
 슬롯을 소모하지 않음). 어느 버튼이 어떤 건지 헷갈리면 `joystick_input.py`를 단독 실행하면
