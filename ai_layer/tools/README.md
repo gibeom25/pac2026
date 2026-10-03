@@ -78,14 +78,18 @@ PYTHONPATH=. python ai_layer/tools/check_dataset.py --repo-id <repo> --root <pat
 PYTHONPATH=. python ai_layer/tools/seam_preview.py photos/*.jpg --out preview/ [--no-invert]
 ```
 
-## rl_env_smoke.py — MuJoCo RL 환경 스모크 (2026-09-22)
+## rl_env_smoke.py — MuJoCo RL 환경 스모크 (2026-10-03, ee_rig 기반 재작성)
 
 ```bash
-PYTHONPATH=. /home/dy/pac2026/env_lerobot/bin/python ai_layer/tools/rl_env_smoke.py [--bc-checkpoint outputs/bc_act/last]
+PYTHONPATH=. python ai_layer/tools/rl_env_smoke.py [--bc-checkpoint outputs/bc_act/last]
 ```
 
-home 자세, 2초 드리프트, 경로 영역 안 이동/회전 추종(정지 후 ±1 cm/±0.03 rad), BC teacher 보상, 도달 한계 경고. 통과 기준은
-경로 영역(x 0.15~0.35, z 0.05~0.10) 안이다. x 0.45 같은 한계 근처 목표는 5DOF 팔이 물리적으로 못 가므로 검사하지 않는다.
+`so101_seam_env.py`가 실제 데이터 수집과 같은 물리(ee_rig.xml)로 전면 재작성됐다(아래 "리더암 ->
+조이스틱 전환" 절 참고 — RL도 이제 같은 리그를 쓴다). 확인 항목: home tip 위치(5cm 막대 오프셋
+반영, z≈0.10), 3초 제로-액션 드리프트(<2mm), +x 액션 스케일 적분 정확도, **바닥/용지 접촉 시
+즉시 terminated + floor_contact_penalty**(record_mujoco.py의 "접촉=자동 폐기"와 같은 규약),
+**선에서 off_seam_safety_dist(기본 3cm)보다 멀면 트리거를 켜도 비드가 강제로 꺼지는 안전 컷오프**
+(reward.py의 coverage soft penalty와는 별개의 하드 제약), BC teacher 보상 계산.
 
 ## 2026-09-23: 리더암 -> 조이스틱 전환, 로봇 몸통 제거 (EE 전용 리그)
 
@@ -127,29 +131,41 @@ PYTHONPATH=. python ai_layer/tools/joystick_input.py [--list]
 없으므로 데이터셋도 관절공간이 아니라 **EE-native 포맷으로 직접 기록**한다:
 `observation.state`(9,)=[x,y,z,rot6d(6)], `observation.images.wrist`, `action`(7,)=[dx,dy,dz,drx,dry,drz,gripper]
 — 이미 `configs/so101_act_bc.py`의 ACTConfig 입출력 스펙과 형태가 같다.
-⚠️ `train_bc.py`가 쓰는 `SO101BCDataset`은 아직 관절공간 -> EEF 변환을 전제로 하므로 이 포맷을 바로
-못 읽는다 — 학습에 쓰려면 SO101BCDataset에 "이미 EEF 포맷인 데이터셋은 변환 없이 통과" 경로를
-추가하는 후속 작업이 필요하다 (아직 안 함).
+2026-10-03: `train_bc.py`는 이제 `ai_layer/data/load_bc_dataset()`으로 robot_type을 보고 자동으로
+`SO101EEDataset`(이 도구가 만드는 EE-native 포맷, 변환 불필요)과 `SO101BCDataset`(실물 lerobot-record
+관절공간 포맷)을 구분해서 쓴다 — 더 이상 후속 작업이 필요 없다. `check_dataset.py`도 같은 판별을 쓴다.
 
-**`--scene`으로 용접선 형태를 고른다** (기본 `curve`): `curve`(완만한 곡선) / `straight`(직선) /
-`sharp_curve`(급곡선) / `corner`(코너) / `branch`(분기점, seam_cv 분기점 순서 로직 검증용) /
-`dashed`(점선, seam_cv KD-tree 갭브리징 검증용). A4 용지는 모든 씬에서 공통으로 세계좌표 x=0.25
-중심(so101_seam_env.py 경로 영역 x 0.15~0.35가 안쪽에 들어옴), 긴 축(297mm)이 x축. 손목 카메라는
-`ee_body`에 직접 달려 있고 위치는 근사값(뷰어로 확인 후 조정 가능) — top-down에 가까운 각도로
-바로 아래 용접선이 보이게 맞춰뒀다.
+**`--scene`으로 용접선 형태를 고른다** (기본 `balanced`): `balanced`는 에피소드마다 `curve`(완만한
+곡선)/`straight`(직선)/`sharp_curve`(급곡선)/`corner`(코너)/`branch`(분기점, seam_cv 분기점 순서
+로직 검증용)/`dashed`(점선, seam_cv KD-tree 갭브리징 검증용) × variant 30가지 조합 중 **지금까지
+가장 적게 기록된 조합**을 무작위로 골라 씬을 다시 로드한다(`BalancedSceneSampler`) — 완전 무작위면
+적은 에피소드 수에서 특정 형태가 몰리거나 아예 안 나올 수 있어서, 랜덤하되 분포가 거의 균등하게
+수렴하도록 했다. 카운트는 `<root>/meta/scene_balance.json`에 저장되고 **에피소드가 저장될 때만**
+올라가므로(폐기분 제외), 세션을 여러 번 나눠 돌려도 데이터셋 전체 분포가 유지된다. 특정 형태
+이름을 주면 그 형태 안에서만(variant로) 균형 샘플링한다. A4 용지는 모든 씬에서 공통으로 세계좌표
+x=0.25 중심, 긴 축(297mm)이 x축. 손목 카메라는 `ee_body`에 직접 달려 있고 위치는 근사값(뷰어로
+확인 후 조정 가능) — top-down에 가까운 각도로 바로 아래 용접선이 보이게 맞춰뒀다.
 
-**`--variant`로 형태별 가우시안 노이즈 변형을 고른다** (기본 `-1` = 매번 무작위, `0`=노이즈 없는
-기준, `1~4`=고정 시드로 재현 가능한 노이즈 버전). 형태마다 곡선 진폭/주기/위상, 코너 꺾이는
-위치/각도, 분기 위치/각도, 점선 간격, **선 굵기**까지 흔들어서 형태당 5종씩(총 30개 씬) 미리
-구워뒀다(`textures/gen_seam_textures.py --variants N`). 레퍼런스 6종만 계속 쓰면 BC가 "선은
-항상 이 모양"이라고 암기할 위험이 있어서, 매 녹화 세션마다 다른 인스턴스를 보게 하는 게 목적
-— 왜 런타임 랜덤화(텍스처를 매 에피소드 새로 그려 넣기) 대신 오프라인 사전 생성인지는 파일
-상단 docstring 참고(GPU 텍스처 재업로드가 필요해서 뷰어 켠 채로는 번거로움).
+**`--variant`로 형태별 가우시안 노이즈 변형을 고른다** (기본 `-1` = BalancedSceneSampler로 고름,
+`--scene balanced`일 땐 무시됨. `0`=노이즈 없는 기준, `1~4`=고정 시드로 재현 가능한 노이즈 버전).
+형태마다 곡선 진폭/주기/위상, 코너 꺾이는 위치/각도, 분기 위치/각도, 점선 간격, **선 굵기**까지
+흔들어서 형태당 5종씩(총 30개 씬) 미리 구워뒀다(`textures/gen_seam_textures.py --variants N`).
+레퍼런스 6종만 계속 쓰면 BC가 "선은 항상 이 모양"이라고 암기할 위험이 있어서, 매 녹화 세션마다
+다른 인스턴스를 보게 하는 게 목적 — 왜 런타임 랜덤화(텍스처를 매 에피소드 새로 그려 넣기) 대신
+오프라인 사전 생성인지는 파일 상단 docstring 참고(GPU 텍스처 재업로드가 필요해서 뷰어 켠 채로는
+번거로움). 2026-10-03: 텍스처 PNG 옆에 같은 이름의 `.json`(실제로 그린 경로 좌표+선 굵기)도 같이
+저장한다 — RL(`so101_seam_env.py`)이 reward 계산에 쓰는 ground-truth 경로의 출처다
+(`envs/seam_ground_truth.py`).
+
+**`--root`를 안 주면 이제 HF 캐시가 아니라 프로젝트 로컬 `datasets/<repo-id>`에 저장한다**
+(`.gitignore`에 이미 포함돼 커밋되지 않음) — 팀원끼리 캐시 경로가 흩어지는 문제 방지.
 
 ```bash
 PYTHONPATH=. python ai_layer/tools/record_mujoco.py \
-    --repo-id <hf-user>/so101-mujoco-demo --root ./datasets/so101-mujoco-demo \
-    --scene dashed --num-episodes 5
+    --repo-id <hf-user>/so101-mujoco-demo --num-episodes 30
+# --scene balanced(기본)가 30개 조합을 거의 균등하게 돌아가며 고른다. 특정 형태만 모으려면:
+PYTHONPATH=. python ai_layer/tools/record_mujoco.py \
+    --repo-id <hf-user>/so101-mujoco-demo --scene dashed --num-episodes 5
 ```
 
 **에피소드 길이는 기본적으로 무제한이다 — `BTN_THUMB`(엄지 버튼)를 누르면 그 자리에서 바로

@@ -18,12 +18,23 @@
 variant 0은 항상 기존 레퍼런스(노이즈 없음, 하위호환용 a4_weld_seam_<name>.png와 동일 파라미터).
 variant 1..N-1은 고정 시드로 매번 같은 노이즈를 재현 가능하게 생성.
 
+2026-10-03: 텍스처(png) 옆에 같은 이름의 .json을 함께 저장한다 — RL(envs/so101_seam_env.py)이
+reward 계산에 쓸 "진짜" 용접선 경로(ground truth)가 필요한데, CV로 역추출하면(픽셀->3D 역투영)
+카메라/텍스처 UV 변환 오차가 섞인다. 여기서는 그릴 때 실제로 쓴 좌표(path_mm)를 이미 갖고
+있으므로 그대로 내보내는 게 가장 정확하다. branch는 메인 선(main_pts)만 내보낸다 — 분기 스퍼는
+seam_cv 분기 순서 로직 검증용 시각 요소일 뿐, 실제로 "따라가야 할" 경로는 메인 선 하나다.
+dashed는 끊기기 전의 연속 곡선(xs,ys)을 그대로 쓴다(seam_cv의 갭브리징이 복원하려는 것과 동일한
+"물리적으로는 끊기지 않은 선"이라는 전제). world 좌표 변환(x_mm,y_mm -> world x,y)은
+envs/seam_ground_truth.py 가 담당 (A4 placement 상수는 거기 한 곳에만 둔다).
+
 실행: python assets/so101/textures/gen_seam_textures.py [--variants N]
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
 from pathlib import Path
 
 import numpy as np
@@ -104,7 +115,8 @@ def _draw_polyline(draw: ImageDraw.ImageDraw, pts_mm: list[tuple[float, float]],
         cap(seg[-1])
 
 
-def gen_straight(rng: np.random.Generator | None = None) -> Image.Image:
+# 각 gen_*는 (이미지, ground-truth path_mm (N,2), 선 굵기 mm)를 반환한다.
+def gen_straight(rng: np.random.Generator | None = None) -> tuple[Image.Image, np.ndarray, float]:
     img, draw = _new_canvas()
     y0 = 105.0
     angle_deg = 0.0 if rng is None else _clip(rng.normal(0.0, 8.0), -20.0, 20.0)  # 수평 기준 기울기
@@ -114,11 +126,12 @@ def gen_straight(rng: np.random.Generator | None = None) -> Image.Image:
     dy = half_run * np.tan(np.deg2rad(angle_deg))
     y_c = y0 + y_jitter
     pts = [(x0, y_c - dy), (x1, y_c + dy)]
-    _draw_polyline(draw, pts, width_mm=_rand_width(rng, 2.5))
-    return img
+    width_mm = _rand_width(rng, 2.5)
+    _draw_polyline(draw, pts, width_mm=width_mm)
+    return img, np.array(pts), width_mm
 
 
-def gen_curve(rng: np.random.Generator | None = None) -> Image.Image:
+def gen_curve(rng: np.random.Generator | None = None) -> tuple[Image.Image, np.ndarray, float]:
     img, draw = _new_canvas()
     x0, x1 = MARGIN_MM, 297 - MARGIN_MM
     xs = np.linspace(x0, x1, 400)
@@ -126,11 +139,12 @@ def gen_curve(rng: np.random.Generator | None = None) -> Image.Image:
     period = 180.0 if rng is None else _clip(rng.normal(180.0, 30.0), 100.0, 260.0)
     phase = 0.0 if rng is None else rng.uniform(0, 2 * np.pi)
     ys = 105 + amp * np.sin(2 * np.pi * xs / period + phase)
-    _draw_polyline(draw, list(zip(xs.tolist(), ys.tolist())), width_mm=_rand_width(rng, 2.5))
-    return img
+    width_mm = _rand_width(rng, 2.5)
+    _draw_polyline(draw, list(zip(xs.tolist(), ys.tolist())), width_mm=width_mm)
+    return img, np.stack([xs, ys], axis=1), width_mm
 
 
-def gen_sharp_curve(rng: np.random.Generator | None = None) -> Image.Image:
+def gen_sharp_curve(rng: np.random.Generator | None = None) -> tuple[Image.Image, np.ndarray, float]:
     img, draw = _new_canvas()
     x0, x1 = MARGIN_MM, 297 - MARGIN_MM
     xs = np.linspace(x0, x1, 500)
@@ -138,21 +152,23 @@ def gen_sharp_curve(rng: np.random.Generator | None = None) -> Image.Image:
     period = 80.0 if rng is None else _clip(rng.normal(80.0, 15.0), 50.0, 120.0)
     phase = 0.0 if rng is None else rng.uniform(0, 2 * np.pi)
     ys = 105 + amp * np.sin(2 * np.pi * xs / period + phase)
-    _draw_polyline(draw, list(zip(xs.tolist(), ys.tolist())), width_mm=_rand_width(rng, 2.5))
-    return img
+    width_mm = _rand_width(rng, 2.5)
+    _draw_polyline(draw, list(zip(xs.tolist(), ys.tolist())), width_mm=width_mm)
+    return img, np.stack([xs, ys], axis=1), width_mm
 
 
-def gen_corner(rng: np.random.Generator | None = None) -> Image.Image:
+def gen_corner(rng: np.random.Generator | None = None) -> tuple[Image.Image, np.ndarray, float]:
     img, draw = _new_canvas()
     bend_x = 297 / 2 if rng is None else _clip(rng.normal(297 / 2, 20.0), 90.0, 210.0)
     y_start = 60.0 if rng is None else _clip(rng.normal(60.0, 15.0), 30.0, 90.0)
     y_end = 160.0 if rng is None else _clip(rng.normal(160.0, 15.0), 120.0, 180.0)
     pts = [(MARGIN_MM, y_start), (bend_x, y_start), (297 - MARGIN_MM, y_end)]
-    _draw_polyline(draw, pts, width_mm=_rand_width(rng, 2.5))
-    return img
+    width_mm = _rand_width(rng, 2.5)
+    _draw_polyline(draw, pts, width_mm=width_mm)
+    return img, np.array(pts), width_mm
 
 
-def gen_branch(rng: np.random.Generator | None = None) -> Image.Image:
+def gen_branch(rng: np.random.Generator | None = None) -> tuple[Image.Image, np.ndarray, float]:
     img, draw = _new_canvas()
     main_width = _rand_width(rng, 2.5)
     main_pts = [(MARGIN_MM, 105.0), (297 - MARGIN_MM, 105.0)]
@@ -166,10 +182,11 @@ def gen_branch(rng: np.random.Generator | None = None) -> Image.Image:
         105.0 - branch_len * np.sin(np.deg2rad(branch_angle_deg)),
     )
     _draw_polyline(draw, [branch_start, branch_end], width_mm=_rand_width(rng, 2.2))
-    return img
+    # ground truth = 메인 선만 (분기 스퍼는 제외, 모듈 docstring 참고)
+    return img, np.array(main_pts), main_width
 
 
-def gen_dashed(rng: np.random.Generator | None = None) -> Image.Image:
+def gen_dashed(rng: np.random.Generator | None = None) -> tuple[Image.Image, np.ndarray, float]:
     img, draw = _new_canvas()
     x0, x1 = MARGIN_MM, 297 - MARGIN_MM
     xs = np.linspace(x0, x1, 400)
@@ -179,8 +196,10 @@ def gen_dashed(rng: np.random.Generator | None = None) -> Image.Image:
     ys = 105 + amp * np.sin(2 * np.pi * xs / period + phase)
     on_mm = 14.0 if rng is None else _clip(rng.normal(14.0, 4.0), 6.0, 25.0)
     off_mm = 8.0 if rng is None else _clip(rng.normal(8.0, 3.0), 3.0, 16.0)
-    _draw_polyline(draw, list(zip(xs.tolist(), ys.tolist())), width_mm=_rand_width(rng, 2.5), dash_mm=(on_mm, off_mm))
-    return img
+    width_mm = _rand_width(rng, 2.5)
+    _draw_polyline(draw, list(zip(xs.tolist(), ys.tolist())), width_mm=width_mm, dash_mm=(on_mm, off_mm))
+    # ground truth = 끊기기 전의 연속 곡선 (물리적으로는 안 끊긴 선이라는 전제, 모듈 docstring 참고)
+    return img, np.stack([xs, ys], axis=1), width_mm
 
 
 VARIANTS = {
@@ -193,6 +212,21 @@ VARIANTS = {
 }
 
 
+def _variant_seed(name: str, i: int) -> int:
+    """고정 결정론적 시드. 파이썬 내장 hash()는 문자열 해시 랜덤화(PYTHONHASHSEED)로 실행마다
+    달라져서 재생성할 때마다 variant 모양이 바뀌는 버그가 있었다 — md5로 대체해 고정."""
+    digest = hashlib.md5(f"{name}_{i}".encode()).digest()
+    return int.from_bytes(digest[:4], "little")
+
+
+def _save_path_json(out_png: Path, path_mm: np.ndarray, width_mm: float) -> None:
+    out_json = out_png.with_suffix(".json")
+    out_json.write_text(json.dumps({
+        "path_mm": np.asarray(path_mm, dtype=float).round(3).tolist(),
+        "width_mm": round(float(width_mm), 3),
+    }))
+
+
 def main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument("--variants", type=int, default=N_VARIANTS_DEFAULT, help="형태당 생성할 변형 개수 (0번은 항상 노이즈 없는 기준)")
@@ -200,17 +234,19 @@ def main() -> None:
 
     for name, fn in VARIANTS.items():
         # variant 0: 기존 레퍼런스와 동일 (하위호환, a4_weld_seam_<name>.png)
-        img0 = fn(rng=None)
+        img0, path0, width0 = fn(rng=None)
         out0 = OUT_DIR / f"a4_weld_seam_{name}.png"
         img0.save(out0)
-        print(f"saved {out0} {img0.size}")
+        _save_path_json(out0, path0, width0)
+        print(f"saved {out0} {img0.size} (+{out0.with_suffix('.json').name}, {len(path0)}pt)")
 
         for i in range(1, args.variants):
-            rng = np.random.default_rng(seed=hash((name, i)) & 0xFFFFFFFF)
-            img = fn(rng=rng)
+            rng = np.random.default_rng(seed=_variant_seed(name, i))
+            img, path, width = fn(rng=rng)
             out = OUT_DIR / f"a4_weld_seam_{name}_{i}.png"
             img.save(out)
-            print(f"saved {out} {img.size}")
+            _save_path_json(out, path, width)
+            print(f"saved {out} {img.size} (+{out.with_suffix('.json').name}, {len(path)}pt)")
 
 
 if __name__ == "__main__":

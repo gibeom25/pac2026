@@ -37,11 +37,24 @@ BTN_TRIGGER를 누르고 있는 동안 그리퍼/도구 신호=1이고 비드가
 누르면 폐기하고 재시도**한다(원하면 --episode-seconds로 자동 종료 상한도 줄 수 있음). 끝나면
 EE 위치/자세가 바로 홈으로 초기화된다. 에피소드 사이에 Enter를 누르면 다음 녹화를 시작한다.
 Ctrl+C로 중단하면 그때까지 저장된 에피소드는 유지된다.
+
+2026-10-03: 저장 위치와 씬 분포 2가지를 추가했다.
+  - 저장 위치: --root를 안 주면 더 이상 HF 캐시(~/.cache/huggingface/lerobot/...)가 아니라
+    프로젝트 로컬 datasets/<repo-id>에 저장한다(DATASETS_DIR). 팀원끼리 캐시 경로가 흩어지는
+    문제 방지.
+  - 씬 분포: --scene balanced(기본값)이면 에피소드마다 (형태, variant) 30가지 조합 중 "지금까지
+    가장 적게 등장한 조합"에서 무작위로 골라 기록한다(BalancedSceneSampler) — 완전 무작위면 한
+    세션(--num-episodes가 작을 때)에서 특정 형태가 몰리거나 아예 안 뽑힐 수 있어서, 카운트
+    기반으로 거의 균등하게 쏠리게 한다. 카운트는 데이터셋의 meta/scene_balance.json에 저장되고
+    에피소드가 "저장"될 때만(폐기되면 안 됨) 올라가므로, 세션을 여러 번 나눠 돌려도 전체 분포가
+    유지된다. --scene <이름>을 직접 주면 그 형태 안에서 variant만 균형 샘플링(기존 --variant -1
+    동작의 균형판)하고, --variant까지 명시하면 완전 고정(기존과 동일).
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import random
 import sys
 import time
@@ -60,7 +73,9 @@ from lerobot.datasets.lerobot_dataset import LeRobotDataset  # noqa: E402
 from lerobot.datasets.utils import build_dataset_frame, hw_to_dataset_features  # noqa: E402
 from lerobot.utils.rotation import Rotation  # noqa: E402
 
-ASSETS_DIR = Path(__file__).resolve().parents[2] / "assets" / "so101"
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+ASSETS_DIR = PROJECT_ROOT / "assets" / "so101"
+DATASETS_DIR = PROJECT_ROOT / "datasets"  # --root 기본값 (2026-10-03, HF 캐시 대신 프로젝트 로컬)
 SCENE_VARIANTS = ["curve", "straight", "sharp_curve", "corner", "branch", "dashed"]
 # textures/gen_seam_textures.py --variants 기본값과 맞춤. variant 0 = 노이즈 없는 기준
 # (scene_a4_<scene>.xml), 1~N_VARIANTS-1 = 가우시안 노이즈 준 사전 생성본(scene_a4_<scene>_<i>.xml) —
@@ -155,6 +170,54 @@ def _mjcf_path(scene: str, variant: int = 0) -> Path:
     return ASSETS_DIR / name
 
 
+class BalancedSceneSampler:
+    """(scene, variant) 조합을 무작위로 고르되, 지금까지 누적 횟수가 거의 균등하게 수렴하도록 고른다.
+
+    매 호출(pick)마다 "지금까지 가장 적게 등장한 조합들" 중에서 무작위로 하나를 뽑는다(그리디
+    최소 + 동률 내 랜덤). 완전 균등 셔플(미리 스케줄을 짜서 소비)이 아니라 그리디 방식을 쓰는
+    이유: 에피소드가 폐기(discard)될 수 있어서 "몇 번째 에피소드인지"와 "실제로 저장된 조합이
+    몇 번 쓰였는지"가 어긋난다 — 매번 그 시점의 실제 누적 카운트를 보고 고르면 폐기가 섞여도
+    항상 올바른 방향(가장 모자란 쪽)으로 수렴한다. 카운트는 commit()에서 저장이 확정된 뒤에만
+    올리고, counts_path에 영구 저장해 세션을 나눠 돌려도 이어서 균형을 맞춘다.
+    """
+
+    def __init__(self, combos: list[tuple[str, int]], counts_path: Path, rng: random.Random | None = None):
+        self.combos = combos
+        self.counts_path = counts_path
+        self.rng = rng or random.Random()
+        existing = {}
+        if counts_path.exists():
+            existing = json.loads(counts_path.read_text())
+        self.counts = {self._key(s, v): existing.get(self._key(s, v), 0) for s, v in combos}
+
+    @staticmethod
+    def _key(scene: str, variant: int) -> str:
+        return f"{scene}:{variant}"
+
+    def pick(self) -> tuple[str, int]:
+        min_count = min(self.counts[self._key(s, v)] for s, v in self.combos)
+        candidates = [(s, v) for s, v in self.combos if self.counts[self._key(s, v)] == min_count]
+        return self.rng.choice(candidates)
+
+    def commit(self, scene: str, variant: int) -> None:
+        """에피소드가 실제로 저장됐을 때만 호출 — 폐기된 에피소드는 카운트에 넣지 않는다."""
+        self.counts[self._key(scene, variant)] += 1
+        self.counts_path.parent.mkdir(parents=True, exist_ok=True)
+        self.counts_path.write_text(json.dumps(self.counts, indent=2, sort_keys=True))
+
+
+def _build_combos(scene_arg: str, variant_arg: int) -> list[tuple[str, int]]:
+    if scene_arg == "balanced":
+        return [(s, v) for s in SCENE_VARIANTS for v in range(N_VARIANTS)]
+    if variant_arg >= 0:
+        return [(scene_arg, variant_arg)]  # 완전 고정 — 샘플러를 거쳐도 매번 같은 조합만 나온다
+    return [(scene_arg, v) for v in range(N_VARIANTS)]
+
+
+class _StopRecording(Exception):
+    """뷰어 창을 닫아서 전체 기록을 중단해야 할 때 — main()에서 KeyboardInterrupt와 동일하게 처리."""
+
+
 def _draw_bead_trail(scene, beads: list[BeadDrop]) -> None:
     """축적된 비드 방울(낙하 중이거나 이미 정착한)을 시각 전용 geom으로 씬에 얹는다.
 
@@ -210,11 +273,16 @@ def parse_args() -> argparse.Namespace:
              "에피소드로 넘어간다. 값을 주면 그 전에 BTN_THUMB를 눌러도 되고, 시간이 차면 자동 종료.",
     )
     p.add_argument("--task", default="weld seam following demo (mujoco ee-only, joystick)")
-    p.add_argument("--scene", choices=SCENE_VARIANTS, default="curve", help="A4 용접선 형태")
+    p.add_argument(
+        "--scene", choices=["balanced", *SCENE_VARIANTS], default="balanced",
+        help="A4 용접선 형태. 기본 'balanced'는 에피소드마다 6형태×variant 30가지 중 지금까지 "
+             "가장 적게 쓰인 조합을 무작위로 고른다(BalancedSceneSampler). 특정 형태를 주면 그 "
+             "형태 안에서만 (variant로) 균형 샘플링한다.",
+    )
     p.add_argument(
         "--variant", type=int, default=-1,
         help=f"용접선 변형(0={{노이즈 없음}}, 1~{N_VARIANTS - 1}=가우시안 노이즈 사전생성본). "
-             f"기본(-1)은 매번 무작위로 고름 — textures/gen_seam_textures.py 참고",
+             f"기본(-1)은 BalancedSceneSampler로 고름 — --scene balanced일 땐 무시됨.",
     )
     p.add_argument("--headless", action="store_true", help="라이브 뷰어 창 없이 실행 (기본: 창 띄움)")
     p.add_argument("--max-linear-speed", type=float, default=0.05, help="조이스틱 최대 EE 속도 [m/s]")
@@ -233,9 +301,7 @@ def parse_args() -> argparse.Namespace:
 def _dataset_root(args: argparse.Namespace) -> Path:
     if args.root is not None:
         return Path(args.root)
-    from lerobot.utils.constants import HF_LEROBOT_HOME
-
-    return HF_LEROBOT_HOME / args.repo_id
+    return DATASETS_DIR / args.repo_id
 
 
 def _existing_episode_count(root: Path) -> int:
@@ -283,7 +349,7 @@ def build_dataset(args: argparse.Namespace) -> LeRobotDataset:
                     break
                 elif reply in ("r", "resume"):
                     print(f"[record] 이어서 기록합니다 (기존 {n}개 에피소드 뒤에 추가).")
-                    return LeRobotDataset(repo_id=args.repo_id, root=args.root)
+                    return LeRobotDataset(repo_id=args.repo_id, root=root)
                 elif reply in ("c", "cancel"):
                     print("[record] 취소했습니다.")
                     sys.exit(1)
@@ -294,13 +360,14 @@ def build_dataset(args: argparse.Namespace) -> LeRobotDataset:
         repo_id=args.repo_id,
         fps=args.fps,
         features=features,
-        root=args.root,
+        root=root,
         robot_type="so101_ee_mujoco_joystick",
         use_videos=False,
     )
 
 
-def _run(args: argparse.Namespace, ctl: JoystickEEController, model, data, renderer, dataset, viewer) -> None:
+def _run_one_episode(args: argparse.Namespace, ctl: JoystickEEController, model, data, renderer, dataset, viewer) -> bool:
+    """에피소드 하나를 기록한다. 저장되면 True, 폐기(바닥 접촉/BTN_THUMB2)되면 False를 반환한다."""
     dt = 1.0 / args.fps
     substeps = max(1, int(round(dt / model.opt.timestep)))
 
@@ -309,158 +376,170 @@ def _run(args: argparse.Namespace, ctl: JoystickEEController, model, data, rende
     ee_bid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, EE_BODY_NAME)
     rod_gid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, ROD_GEOM_NAME)
     floor_gid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, FLOOR_GEOM_NAME)
+
+    mujoco.mj_resetData(model, data)
+    target_pos = MOCAP_HOME.copy()
+    R_cmd = np.eye(3)
+    data.mocap_pos[mocap_idx] = target_pos
+    data.mocap_quat[mocap_idx] = IDENTITY_QUAT
+    mujoco.mj_forward(model, data)
+    bead_points: list[BeadDrop] = []
+    prev_pose: np.ndarray | None = None
+    floor_touched = False
+
+    t0 = time.perf_counter()
+    max_steps = int(args.episode_seconds * args.fps) if args.episode_seconds else None
+    step = 0
+    while max_steps is None or step < max_steps:
+        loop_t0 = time.perf_counter()
+
+        ctl.poll()
+        vx, vy, vz = ctl.ee_velocity(
+            max_linear=args.max_linear_speed,
+            invert_x=args.invert_x,
+            invert_y=args.invert_y,
+            invert_z=args.invert_z,
+        )
+        target_pos = target_pos + np.array([vx, vy, vz]) * dt
+        target_pos[0] = float(np.clip(target_pos[0], *WORKSPACE_X))
+        target_pos[1] = float(np.clip(target_pos[1], *WORKSPACE_Y))
+        target_pos[2] = float(np.clip(target_pos[2], *WORKSPACE_Z))
+        data.mocap_pos[mocap_idx] = target_pos
+
+        wx, wy, wz = ctl.rotation_rate(
+            max_angular=args.max_angular_speed, invert_x=args.invert_roll, invert_y=args.invert_pitch
+        )
+        if wx or wy or wz:
+            R_cmd = Rotation.from_rotvec(np.array([wx, wy, wz]) * dt).as_matrix() @ R_cmd
+        data.mocap_quat[mocap_idx] = _rotmat_to_mujoco_quat(R_cmd)
+        bit = ctl.gripper_bit()
+
+        for _ in range(substeps):
+            mujoco.mj_step(model, data)
+
+        tip = _rod_tip_world(data, rod_gid)
+        contact_pos = _contact_pos(data, rod_gid, floor_gid)
+        if contact_pos is not None:
+            floor_touched = True  # 표면에 닿음 = 실패 조건 (아래서 폐기 처리)
+        if bit and step % BEAD_STRIDE == 0:
+            bead_points.append(BeadDrop(tip.copy()))  # 막대 끝에서 생성, 이후 자유낙하
+        for b in bead_points:
+            b.step(dt)
+
+        if viewer is not None:
+            viewer.cam.lookat[:] = tip  # 뷰어 시점이 도구 끝을 계속 따라가게(azimuth/거리는 마우스로 자유 조작 가능)
+            viewer.user_scn.ngeom = 0
+            _draw_bead_trail(viewer.user_scn, bead_points)
+            viewer.sync()
+            if not viewer.is_running():
+                print("[record] 뷰어 창이 닫혀서 전체 기록을 중단합니다.")
+                raise _StopRecording()
+
+        pose = _ee_pose_xyzrotvec(data, ee_bid, rod_gid)  # (6,) [xyz, rotvec], 도구 끝 기준 실측
+        if prev_pose is None:
+            delta6 = np.zeros(6)
+        else:
+            delta6 = pose_delta(prev_pose, pose)
+        prev_pose = pose
+
+        renderer.update_scene(data, camera=CAMERA_NAME)
+        _draw_bead_trail(renderer.scene, bead_points)
+        img = renderer.render()
+
+        state9 = pose_to_state(pose)
+        obs_values = {**dict(zip(STATE_KEYS, state9.tolist())), "wrist": img}
+        action_values = {**dict(zip(ACTION_KEYS[:6], delta6.tolist())), "gripper": bit}
+        obs_frame = build_dataset_frame(dataset.features, obs_values, prefix="observation")
+        action_frame = build_dataset_frame(dataset.features, action_values, prefix="action")
+
+        dataset.add_frame({**obs_frame, **action_frame, "task": args.task})
+
+        if step % args.fps == 0:
+            touching = "접촉" if contact_pos is not None else "떠있음"
+            print(
+                f"  t={step / args.fps:.1f}s pos=({target_pos[0]:.3f},{target_pos[1]:.3f},{target_pos[2]:.3f})"
+                f"  | trigger={bit:.0f} 막대={touching} 비드={len(bead_points)}점"
+            )
+
+        discard_btn = ctl.discard_requested()  # 엣지 트리거라 이 프레임에 한 번만 호출/소비
+        discard = discard_btn or floor_touched
+        if discard or ctl.episode_end_requested():
+            if floor_touched:
+                reason = "막대가 바닥/용지에 닿음 — 자동 폐기"
+            elif discard_btn:
+                reason = "BTN_THUMB2 눌림 — 폐기"
+            else:
+                reason = "BTN_THUMB 눌림 — 종료"
+            print(f"\n[record] {reason}.")
+            step += 1
+            break
+
+        step += 1
+        elapsed = time.perf_counter() - loop_t0
+        if elapsed < dt:
+            time.sleep(dt - elapsed)
+    else:
+        discard = False  # while이 max_steps에 도달해서 정상 종료된 경우 (break 안 거침)
+
+    if discard:
+        dataset.clear_episode_buffer()
+        print("[record] 에피소드 폐기됨 — 같은 조합으로 다시 시도합니다.")
+        return False
+
+    dataset.save_episode()
+    print(f"[record] 에피소드 저장 완료 ({time.perf_counter() - t0:.1f}s, {step} 프레임)")
+    return True
+
+
+def _run(args: argparse.Namespace, ctl: JoystickEEController, dataset, sampler: BalancedSceneSampler) -> None:
+    """에피소드마다 BalancedSceneSampler로 (씬, variant)를 고르고, 그 씬을 새로 로드해 기록한다.
+
+    씬이 에피소드마다 바뀔 수 있어 MjModel/렌더러/뷰어를 매 에피소드 다시 만든다 — "준비되면 Enter"
+    대기 구간에 끼워 넣어서(물리적 종이를 바꿔 끼우는 게 아니라 XML 재로드라 1초 미만) 체감
+    끊김이 거의 없다. --headless가 아니면 뷰어 창도 에피소드마다 닫혔다 새로 뜬다(launch_passive가
+    (model,data) 쌍 하나에 묶여 있어 모델을 바꾸려면 다시 열어야 함).
+    """
     print(f"[record] EE 최대속도={args.max_linear_speed} m/s, 작업공간 x={WORKSPACE_X} y={WORKSPACE_Y} z={WORKSPACE_Z}")
 
     saved_count = 0
     while saved_count < args.num_episodes:
-        input(f"\n[record] 에피소드 {saved_count + 1}/{args.num_episodes} — 준비되면 Enter (Ctrl+C 종료) ")
-        mujoco.mj_resetData(model, data)
-        target_pos = MOCAP_HOME.copy()
-        R_cmd = np.eye(3)
-        data.mocap_pos[mocap_idx] = target_pos
-        data.mocap_quat[mocap_idx] = IDENTITY_QUAT
+        scene, variant = sampler.pick()
+        mjcf_path = _mjcf_path(scene, variant)
+        model = mujoco.MjModel.from_xml_path(str(mjcf_path))
+        data = mujoco.MjData(model)
+        renderer = mujoco.Renderer(model, height=CAMERA_HW[0], width=CAMERA_HW[1])
         mujoco.mj_forward(model, data)
-        bead_points: list[BeadDrop] = []
-        prev_pose: np.ndarray | None = None
-        floor_touched = False
 
-        t0 = time.perf_counter()
-        max_steps = int(args.episode_seconds * args.fps) if args.episode_seconds else None
-        step = 0
-        while max_steps is None or step < max_steps:
-            loop_t0 = time.perf_counter()
+        input(
+            f"\n[record] 에피소드 {saved_count + 1}/{args.num_episodes} — scene={scene} variant={variant} "
+            f"({mjcf_path.name}) — 준비되면 Enter (Ctrl+C 종료) "
+        )
 
-            ctl.poll()
-            vx, vy, vz = ctl.ee_velocity(
-                max_linear=args.max_linear_speed,
-                invert_x=args.invert_x,
-                invert_y=args.invert_y,
-                invert_z=args.invert_z,
-            )
-            target_pos = target_pos + np.array([vx, vy, vz]) * dt
-            target_pos[0] = float(np.clip(target_pos[0], *WORKSPACE_X))
-            target_pos[1] = float(np.clip(target_pos[1], *WORKSPACE_Y))
-            target_pos[2] = float(np.clip(target_pos[2], *WORKSPACE_Z))
-            data.mocap_pos[mocap_idx] = target_pos
-
-            wx, wy, wz = ctl.rotation_rate(
-                max_angular=args.max_angular_speed, invert_x=args.invert_roll, invert_y=args.invert_pitch
-            )
-            if wx or wy or wz:
-                R_cmd = Rotation.from_rotvec(np.array([wx, wy, wz]) * dt).as_matrix() @ R_cmd
-            data.mocap_quat[mocap_idx] = _rotmat_to_mujoco_quat(R_cmd)
-            bit = ctl.gripper_bit()
-
-            for _ in range(substeps):
-                mujoco.mj_step(model, data)
-
-            tip = _rod_tip_world(data, rod_gid)
-            contact_pos = _contact_pos(data, rod_gid, floor_gid)
-            if contact_pos is not None:
-                floor_touched = True  # 표면에 닿음 = 실패 조건 (아래서 폐기 처리)
-            if bit and step % BEAD_STRIDE == 0:
-                bead_points.append(BeadDrop(tip.copy()))  # 막대 끝에서 생성, 이후 자유낙하
-            for b in bead_points:
-                b.step(dt)
-
-            if viewer is not None:
-                viewer.cam.lookat[:] = tip  # 뷰어 시점이 도구 끝을 계속 따라가게(azimuth/거리는 마우스로 자유 조작 가능)
-                viewer.user_scn.ngeom = 0
-                _draw_bead_trail(viewer.user_scn, bead_points)
-                viewer.sync()
-                if not viewer.is_running():
-                    print("[record] 뷰어 창이 닫혀서 중단합니다.")
-                    return
-
-            pose = _ee_pose_xyzrotvec(data, ee_bid, rod_gid)  # (6,) [xyz, rotvec], 도구 끝 기준 실측
-            if prev_pose is None:
-                delta6 = np.zeros(6)
-            else:
-                delta6 = pose_delta(prev_pose, pose)
-            prev_pose = pose
-
-            renderer.update_scene(data, camera=CAMERA_NAME)
-            _draw_bead_trail(renderer.scene, bead_points)
-            img = renderer.render()
-
-            state9 = pose_to_state(pose)
-            obs_values = {**dict(zip(STATE_KEYS, state9.tolist())), "wrist": img}
-            action_values = {**dict(zip(ACTION_KEYS[:6], delta6.tolist())), "gripper": bit}
-            obs_frame = build_dataset_frame(dataset.features, obs_values, prefix="observation")
-            action_frame = build_dataset_frame(dataset.features, action_values, prefix="action")
-
-            dataset.add_frame({**obs_frame, **action_frame, "task": args.task})
-
-            if step % args.fps == 0:
-                touching = "접촉" if contact_pos is not None else "떠있음"
-                print(
-                    f"  t={step / args.fps:.1f}s pos=({target_pos[0]:.3f},{target_pos[1]:.3f},{target_pos[2]:.3f})"
-                    f"  | trigger={bit:.0f} 막대={touching} 비드={len(bead_points)}점"
-                )
-
-            discard_btn = ctl.discard_requested()  # 엣지 트리거라 이 프레임에 한 번만 호출/소비
-            discard = discard_btn or floor_touched
-            if discard or ctl.episode_end_requested():
-                if floor_touched:
-                    reason = "막대가 바닥/용지에 닿음 — 자동 폐기"
-                elif discard_btn:
-                    reason = "BTN_THUMB2 눌림 — 폐기"
-                else:
-                    reason = "BTN_THUMB 눌림 — 종료"
-                print(f"\n[record] {reason}.")
-                step += 1
-                break
-
-            step += 1
-            elapsed = time.perf_counter() - loop_t0
-            if elapsed < dt:
-                time.sleep(dt - elapsed)
+        if args.headless:
+            saved = _run_one_episode(args, ctl, model, data, renderer, dataset, viewer=None)
         else:
-            discard = False  # while이 max_steps에 도달해서 정상 종료된 경우 (break 안 거침)
+            with mujoco.viewer.launch_passive(model, data) as viewer:
+                saved = _run_one_episode(args, ctl, model, data, renderer, dataset, viewer)
 
-        if discard:
-            dataset.clear_episode_buffer()
-            print(f"[record] 에피소드 {saved_count + 1} 폐기됨 — 같은 번호로 다시 시도합니다.")
-        else:
-            dataset.save_episode()
+        renderer.close()
+        if saved:
+            sampler.commit(scene, variant)
             saved_count += 1
-            print(f"[record] 에피소드 {saved_count} 저장 완료 ({time.perf_counter() - t0:.1f}s, {step} 프레임)")
-
-        # 에피소드 끝나면 위치를 바로 초기화 — 다음 "준비되면 Enter" 대기 중에도 뷰어가 홈 자세를
-        # 보여주게 한다 (다음 에피소드 시작 때도 어차피 초기화하지만, 그건 Enter를 누른 뒤라 그
-        # 사이엔 마지막 위치에 멈춰 있던 채로 보였음).
-        mujoco.mj_resetData(model, data)
-        data.mocap_pos[mocap_idx] = MOCAP_HOME.copy()
-        data.mocap_quat[mocap_idx] = IDENTITY_QUAT
-        mujoco.mj_forward(model, data)
-        if viewer is not None:
-            viewer.user_scn.ngeom = 0
-            viewer.sync()
 
 
 def main() -> None:
     args = parse_args()
 
     ctl = JoystickEEController()
-
-    variant = args.variant if args.variant >= 0 else random.randint(0, N_VARIANTS - 1)
-    mjcf_path = _mjcf_path(args.scene, variant)
-    print(f"[record] scene: {args.scene} variant={variant} ({mjcf_path.name})")
-    model = mujoco.MjModel.from_xml_path(str(mjcf_path))
-    data = mujoco.MjData(model)
-    renderer = mujoco.Renderer(model, height=CAMERA_HW[0], width=CAMERA_HW[1])
-    mujoco.mj_forward(model, data)
-
     dataset = build_dataset(args)
 
+    combos = _build_combos(args.scene, args.variant)
+    counts_path = Path(dataset.root) / "meta" / "scene_balance.json"
+    sampler = BalancedSceneSampler(combos, counts_path)
+
     try:
-        if args.headless:
-            _run(args, ctl, model, data, renderer, dataset, viewer=None)
-        else:
-            print("[record] 뷰어 창을 띄웁니다 (--headless로 끌 수 있음).")
-            with mujoco.viewer.launch_passive(model, data) as viewer:
-                _run(args, ctl, model, data, renderer, dataset, viewer)
-    except KeyboardInterrupt:
+        _run(args, ctl, dataset, sampler)
+    except (KeyboardInterrupt, _StopRecording):
         print("\n[record] 중단됨 — 이미 저장된 에피소드는 유지됩니다.")
     finally:
         ctl.close()

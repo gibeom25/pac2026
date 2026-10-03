@@ -31,7 +31,7 @@ from lerobot.policies.act.modeling_act import ACTPolicy
 from lerobot.policies.act.processor_act import make_act_pre_post_processors
 
 from ai_layer.configs.so101_act_bc import build_so101_act_config
-from ai_layer.data.so101_bc_dataset import SO101BCDataset
+from ai_layer.data import detect_dataset_kind, load_bc_dataset
 
 
 def parse_args() -> argparse.Namespace:
@@ -67,8 +67,9 @@ def main() -> None:
     cfg = build_so101_act_config()
     cfg.device = str(device)
 
-    dataset = SO101BCDataset(repo_id=args.repo_id, root=args.root, precompute_seam=not args.no_precompute_seam)
-    print(f"dataset frames={len(dataset)} fps={dataset.raw.fps}")
+    kind = detect_dataset_kind(args.repo_id, args.root)
+    dataset = load_bc_dataset(args.repo_id, root=args.root, precompute_seam=not args.no_precompute_seam)
+    print(f"dataset kind={kind} frames={len(dataset)} fps={dataset.raw.fps}")
 
     # 변환 후(EEF pose/delta/seam) 값으로 정규화 통계 계산 → 전/후처리 파이프라인에 주입
     stats = dataset.compute_stats(max_samples=args.stats_max_samples)
