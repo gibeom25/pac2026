@@ -264,7 +264,7 @@ def _ee_pose_xyzrotvec(data, ee_bid: int, rod_gid: int) -> np.ndarray:
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="조이스틱 -> MuJoCo EE 리그 미러링 데이터 수집.")
     p.add_argument("--repo-id", required=True)
-    p.add_argument("--root", default=None, help="로컬 저장 경로 (없으면 HF_LEROBOT_HOME/<repo-id>)")
+    p.add_argument("--root", default=None, help="로컬 저장 경로 (없으면 datasets/<repo-id>)")
     p.add_argument("--fps", type=int, default=30)
     p.add_argument("--num-episodes", type=int, default=5)
     p.add_argument(

@@ -29,7 +29,7 @@ from lerobot.utils.constants import ACTION, OBS_STATE
 
 from ai_layer.configs.so101_act_bc import ACTION_DIM, CHUNK_SIZE, DT_AI_SEC, IMAGE_KEY, STATE_DIM
 from ai_layer.control_bridge.chunk_builder import ChunkLimits
-from ai_layer.data import detect_dataset_kind
+from ai_layer.data import detect_dataset_kind, resolve_dataset_root
 from ai_layer.kinematics import JOINT_NAMES, URDF_PATH
 
 OK, WARN, FAIL = "✅", "⚠️ ", "❌"
@@ -49,7 +49,7 @@ def urdf_joint_limits_deg() -> dict[str, tuple[float, float]]:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--repo-id", required=True)
-    ap.add_argument("--root", default=None)
+    ap.add_argument("--root", default=None, help="생략하면 datasets/<repo-id> (record_mujoco.py 기본값과 동일)")
     ap.add_argument("--max-samples", type=int, default=300, help="6·7번 검사에 쓸 최대 프레임 수")
     args = ap.parse_args()
 
@@ -62,9 +62,10 @@ def main() -> int:
             problems += 1
         print(f"{tag} {msg}")
 
-    ds = LeRobotDataset(args.repo_id, root=args.root)
+    root = resolve_dataset_root(args.repo_id, args.root)
+    ds = LeRobotDataset(args.repo_id, root=root)
     meta = ds.meta
-    kind = detect_dataset_kind(args.repo_id, args.root)
+    kind = detect_dataset_kind(args.repo_id, root)
     print(f"dataset: {args.repo_id} root={ds.root} kind={kind}")
     print(f"  episodes={meta.total_episodes} frames={meta.total_frames} fps={meta.fps}")
 
@@ -118,7 +119,7 @@ def main() -> int:
     # 6·7. 변환 후 검사 (실제 학습 입력을 만들어 본다 — kind에 맞는 Dataset 클래스로)
     from ai_layer.data import load_bc_dataset
 
-    bc = load_bc_dataset(args.repo_id, root=args.root, precompute_seam=False)
+    bc = load_bc_dataset(args.repo_id, root=root, precompute_seam=False)
     n = len(bc)
     idx = np.linspace(0, n - 1, min(n, args.max_samples)).astype(int)
     pos_lim, rot_lim = ChunkLimits().effective(int(round(DT_AI_SEC * 1e9)))

@@ -14,28 +14,39 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+# tools/record_mujoco.py의 DATASETS_DIR과 반드시 같은 값이어야 한다 — 거기서 저장한 데이터셋을
+# --root 없이 여기서도 찾아야 함(2026-10-03: --root를 생략했더니 여기는 여전히 옛 HF 캐시
+# 기본값을 보고 있어서 로컬 데이터를 못 찾고 HF Hub에 같은 이름으로 물어보려다 401이 난 버그).
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+DATASETS_DIR = PROJECT_ROOT / "datasets"
 
-def _resolve_root(repo_id: str, root: str | Path | None) -> Path:
+
+def resolve_dataset_root(repo_id: str, root: str | Path | None) -> Path:
+    """--root를 생략했을 때의 기본 위치. record_mujoco.py가 저장하는 곳과 반드시 일치해야 한다."""
     if root is not None:
         return Path(root)
-    from lerobot.utils.constants import HF_LEROBOT_HOME
-
-    return HF_LEROBOT_HOME / repo_id
+    return DATASETS_DIR / repo_id
 
 
 def detect_dataset_kind(repo_id: str, root: str | Path | None) -> str:
     """meta/info.json의 robot_type으로 "ee" / "joint"를 구분해 반환."""
-    info_path = _resolve_root(repo_id, root) / "meta" / "info.json"
+    info_path = resolve_dataset_root(repo_id, root) / "meta" / "info.json"
     robot_type = json.loads(info_path.read_text()).get("robot_type", "") if info_path.exists() else ""
     return "ee" if "ee_mujoco" in str(robot_type) else "joint"
 
 
 def load_bc_dataset(repo_id: str, root: str | Path | None = None, **kwargs):
-    """robot_type에 맞는 Dataset(SO101EEDataset 또는 SO101BCDataset)을 만들어 반환."""
-    if detect_dataset_kind(repo_id, root) == "ee":
+    """robot_type에 맞는 Dataset(SO101EEDataset 또는 SO101BCDataset)을 만들어 반환.
+
+    root는 여기서 resolve_dataset_root()로 구체 경로로 바꿔서 넘긴다 — None을 그대로 넘기면
+    LeRobotDataset이 자기 기본값(HF 캐시)을 쓰게 되어 위 detect_dataset_kind()가 본 경로와
+    어긋난다.
+    """
+    resolved_root = resolve_dataset_root(repo_id, root)
+    if detect_dataset_kind(repo_id, resolved_root) == "ee":
         from ai_layer.data.so101_ee_dataset import SO101EEDataset
 
-        return SO101EEDataset(repo_id, root=root, **kwargs)
+        return SO101EEDataset(repo_id, root=resolved_root, **kwargs)
     from ai_layer.data.so101_bc_dataset import SO101BCDataset
 
-    return SO101BCDataset(repo_id, root=root, **kwargs)
+    return SO101BCDataset(repo_id, root=resolved_root, **kwargs)
