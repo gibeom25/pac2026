@@ -38,6 +38,12 @@ BTN_TRIGGER를 누르고 있는 동안 그리퍼/도구 신호=1이고 비드가
 EE 위치/자세가 바로 홈으로 초기화된다. 에피소드 사이에 Enter를 누르면 다음 녹화를 시작한다.
 Ctrl+C로 중단하면 그때까지 저장된 에피소드는 유지된다.
 
+2026-10-03(2차): --dry-run을 추가했다 — 저장(add_frame/save_episode/finalize)만 전부 건너뛰고
+나머지(조이스틱 조작, balanced 씬 전환, Enter로 다음 에피소드, BTN_THUMB/BTN_THUMB2, 바닥 접촉
+자동 폐기, 뷰어/비드)는 실제 수집과 완전히 동일하게 돈다 — "진짜 수집 절차 그대로 연습만 하고
+싶을 때" 쓴다. --repo-id 없이 바로 실행 가능:
+  PYTHONPATH=. python ai_layer/tools/record_mujoco.py --dry-run --num-episodes 3
+
 2026-10-03: 저장 위치와 씬 분포 2가지를 추가했다.
   - 저장 위치: --root를 안 주면 더 이상 HF 캐시(~/.cache/huggingface/lerobot/...)가 아니라
     프로젝트 로컬 datasets/<repo-id>에 저장한다(DATASETS_DIR). 팀원끼리 캐시 경로가 흩어지는
@@ -181,12 +187,13 @@ class BalancedSceneSampler:
     올리고, counts_path에 영구 저장해 세션을 나눠 돌려도 이어서 균형을 맞춘다.
     """
 
-    def __init__(self, combos: list[tuple[str, int]], counts_path: Path, rng: random.Random | None = None):
+    def __init__(self, combos: list[tuple[str, int]], counts_path: Path | None, rng: random.Random | None = None):
+        """counts_path=None이면 메모리에서만 셈(영구 저장 안 함) — --dry-run 연습 세션용."""
         self.combos = combos
         self.counts_path = counts_path
         self.rng = rng or random.Random()
         existing = {}
-        if counts_path.exists():
+        if counts_path is not None and counts_path.exists():
             existing = json.loads(counts_path.read_text())
         self.counts = {self._key(s, v): existing.get(self._key(s, v), 0) for s, v in combos}
 
@@ -202,8 +209,9 @@ class BalancedSceneSampler:
     def commit(self, scene: str, variant: int) -> None:
         """에피소드가 실제로 저장됐을 때만 호출 — 폐기된 에피소드는 카운트에 넣지 않는다."""
         self.counts[self._key(scene, variant)] += 1
-        self.counts_path.parent.mkdir(parents=True, exist_ok=True)
-        self.counts_path.write_text(json.dumps(self.counts, indent=2, sort_keys=True))
+        if self.counts_path is not None:
+            self.counts_path.parent.mkdir(parents=True, exist_ok=True)
+            self.counts_path.write_text(json.dumps(self.counts, indent=2, sort_keys=True))
 
 
 def _build_combos(scene_arg: str, variant_arg: int) -> list[tuple[str, int]]:
@@ -263,8 +271,13 @@ def _ee_pose_xyzrotvec(data, ee_bid: int, rod_gid: int) -> np.ndarray:
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="조이스틱 -> MuJoCo EE 리그 미러링 데이터 수집.")
-    p.add_argument("--repo-id", required=True)
+    p.add_argument("--repo-id", default=None, help="--dry-run이 아니면 필수")
     p.add_argument("--root", default=None, help="로컬 저장 경로 (없으면 datasets/<repo-id>)")
+    p.add_argument(
+        "--dry-run", action="store_true",
+        help="저장(add_frame/save_episode/finalize)만 건너뛰고 나머지(조작/씬 전환/버튼/뷰어)는 "
+             "실제 수집과 동일하게 돈다 — 절차 연습용. --repo-id 없이 실행 가능.",
+    )
     p.add_argument("--fps", type=int, default=30)
     p.add_argument("--num-episodes", type=int, default=5)
     p.add_argument(
@@ -295,7 +308,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--invert-z", action="store_true", help="EE z축 방향 반전")
     p.add_argument("--invert-roll", action="store_true", help="roll 방향 반전")
     p.add_argument("--invert-pitch", action="store_true", help="pitch 방향 반전")
-    return p.parse_args()
+    args = p.parse_args()
+    if args.repo_id is None and not args.dry_run:
+        p.error("--repo-id는 --dry-run이 아니면 필수다.")
+    return args
 
 
 def _dataset_root(args: argparse.Namespace) -> Path:
@@ -367,7 +383,11 @@ def build_dataset(args: argparse.Namespace) -> LeRobotDataset:
 
 
 def _run_one_episode(args: argparse.Namespace, ctl: JoystickEEController, model, data, renderer, dataset, viewer) -> bool:
-    """에피소드 하나를 기록한다. 저장되면 True, 폐기(바닥 접촉/BTN_THUMB2)되면 False를 반환한다."""
+    """에피소드 하나를 기록한다. 저장되면 True, 폐기(바닥 접촉/BTN_THUMB2)되면 False를 반환한다.
+
+    dataset(및 renderer)이 None이면 --dry-run — 물리/조작/버튼/뷰어는 전부 동일하게 돌되 카메라
+    렌더링과 add_frame/save_episode/clear_episode_buffer만 건너뛴다.
+    """
     dt = 1.0 / args.fps
     substeps = max(1, int(round(dt / model.opt.timestep)))
 
@@ -442,17 +462,18 @@ def _run_one_episode(args: argparse.Namespace, ctl: JoystickEEController, model,
             delta6 = pose_delta(prev_pose, pose)
         prev_pose = pose
 
-        renderer.update_scene(data, camera=CAMERA_NAME)
-        _draw_bead_trail(renderer.scene, bead_points)
-        img = renderer.render()
+        if dataset is not None:
+            renderer.update_scene(data, camera=CAMERA_NAME)
+            _draw_bead_trail(renderer.scene, bead_points)
+            img = renderer.render()
 
-        state9 = pose_to_state(pose)
-        obs_values = {**dict(zip(STATE_KEYS, state9.tolist())), "wrist": img}
-        action_values = {**dict(zip(ACTION_KEYS[:6], delta6.tolist())), "gripper": bit}
-        obs_frame = build_dataset_frame(dataset.features, obs_values, prefix="observation")
-        action_frame = build_dataset_frame(dataset.features, action_values, prefix="action")
+            state9 = pose_to_state(pose)
+            obs_values = {**dict(zip(STATE_KEYS, state9.tolist())), "wrist": img}
+            action_values = {**dict(zip(ACTION_KEYS[:6], delta6.tolist())), "gripper": bit}
+            obs_frame = build_dataset_frame(dataset.features, obs_values, prefix="observation")
+            action_frame = build_dataset_frame(dataset.features, action_values, prefix="action")
 
-        dataset.add_frame({**obs_frame, **action_frame, "task": args.task})
+            dataset.add_frame({**obs_frame, **action_frame, "task": args.task})
 
         if step % args.fps == 0:
             touching = "접촉" if contact_pos is not None else "떠있음"
@@ -482,12 +503,16 @@ def _run_one_episode(args: argparse.Namespace, ctl: JoystickEEController, model,
         discard = False  # while이 max_steps에 도달해서 정상 종료된 경우 (break 안 거침)
 
     if discard:
-        dataset.clear_episode_buffer()
+        if dataset is not None:
+            dataset.clear_episode_buffer()
         print("[record] 에피소드 폐기됨 — 같은 조합으로 다시 시도합니다.")
         return False
 
-    dataset.save_episode()
-    print(f"[record] 에피소드 저장 완료 ({time.perf_counter() - t0:.1f}s, {step} 프레임)")
+    if dataset is not None:
+        dataset.save_episode()
+        print(f"[record] 에피소드 저장 완료 ({time.perf_counter() - t0:.1f}s, {step} 프레임)")
+    else:
+        print(f"[record] 에피소드 종료 (dry-run, 저장 안 함, {time.perf_counter() - t0:.1f}s, {step} 프레임)")
     return True
 
 
@@ -507,13 +532,13 @@ def _run(args: argparse.Namespace, ctl: JoystickEEController, dataset, sampler: 
         mjcf_path = _mjcf_path(scene, variant)
         model = mujoco.MjModel.from_xml_path(str(mjcf_path))
         data = mujoco.MjData(model)
-        renderer = mujoco.Renderer(model, height=CAMERA_HW[0], width=CAMERA_HW[1])
+        renderer = mujoco.Renderer(model, height=CAMERA_HW[0], width=CAMERA_HW[1]) if dataset is not None else None
         mujoco.mj_forward(model, data)
 
-        input(
-            f"\n[record] 에피소드 {saved_count + 1}/{args.num_episodes} — scene={scene} variant={variant} "
-            f"({mjcf_path.name}) — 준비되면 Enter (Ctrl+C 종료) "
-        )
+        tag = "scene={} variant={} ({})".format(scene, variant, mjcf_path.name)
+        if dataset is None:
+            tag += " [dry-run, 저장 안 함]"
+        input(f"\n[record] 에피소드 {saved_count + 1}/{args.num_episodes} — {tag} — 준비되면 Enter (Ctrl+C 종료) ")
 
         if args.headless:
             saved = _run_one_episode(args, ctl, model, data, renderer, dataset, viewer=None)
@@ -521,7 +546,8 @@ def _run(args: argparse.Namespace, ctl: JoystickEEController, dataset, sampler: 
             with mujoco.viewer.launch_passive(model, data) as viewer:
                 saved = _run_one_episode(args, ctl, model, data, renderer, dataset, viewer)
 
-        renderer.close()
+        if renderer is not None:
+            renderer.close()
         if saved:
             sampler.commit(scene, variant)
             saved_count += 1
@@ -531,11 +557,17 @@ def main() -> None:
     args = parse_args()
 
     ctl = JoystickEEController()
-    dataset = build_dataset(args)
 
-    combos = _build_combos(args.scene, args.variant)
-    counts_path = Path(dataset.root) / "meta" / "scene_balance.json"
-    sampler = BalancedSceneSampler(combos, counts_path)
+    if args.dry_run:
+        print("[record] --dry-run: 저장은 전부 건너뛴다 (조작/씬 전환/버튼/뷰어는 실제 수집과 동일).")
+        dataset = None
+        combos = _build_combos(args.scene, args.variant)
+        sampler = BalancedSceneSampler(combos, counts_path=None)  # 세션 안에서만 균형, 영구 저장 안 함
+    else:
+        dataset = build_dataset(args)
+        combos = _build_combos(args.scene, args.variant)
+        counts_path = Path(dataset.root) / "meta" / "scene_balance.json"
+        sampler = BalancedSceneSampler(combos, counts_path)
 
     try:
         _run(args, ctl, dataset, sampler)
@@ -543,11 +575,12 @@ def main() -> None:
         print("\n[record] 중단됨 — 이미 저장된 에피소드는 유지됩니다.")
     finally:
         ctl.close()
-        # 필수: 안 부르면 parquet footer 메타데이터가 안 써져서 방금 녹화한 에피소드까지 전부
-        # 다음에 못 여는 깨진 데이터셋이 된다 (LeRobotDataset.finalize 문서 참고).
-        dataset.finalize()
+        if dataset is not None:
+            # 필수: 안 부르면 parquet footer 메타데이터가 안 써져서 방금 녹화한 에피소드까지 전부
+            # 다음에 못 여는 깨진 데이터셋이 된다 (LeRobotDataset.finalize 문서 참고).
+            dataset.finalize()
 
-    print(f"[record] 데이터셋: {dataset.root}")
+    print(f"[record] 데이터셋: {dataset.root}" if dataset is not None else "[record] dry-run 종료 (저장된 데이터 없음)")
 
 
 if __name__ == "__main__":
