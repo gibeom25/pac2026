@@ -8,11 +8,60 @@
 [`tools/README.md`](tools/README.md)(도구별 상세 옵션)를 참고. 이 문서는 "지금 뭘 실행해야
 하는가"에 집중한 실행 가이드다.
 
-## 0. 환경
+## 0. 처음 설치 (새 머신에서)
+
+이미 `pac2026` conda 환경이 있으면 이 절은 건너뛰고 바로 "0-1. 환경 활성화"로.
+
+```bash
+conda create -n pac2026 python=3.10 -y
+conda activate pac2026
+
+# lerobot 본체 + feetech(실물 서보 SDK, 아직 안 써도 미리 깔아둠) + kinematics(placo/pin, FK/IK)
+pip install "lerobot[feetech,kinematics]==0.4.4"
+# placo/pin 휠이 urdfdom 4 / tinyxml2 10에 링크돼 있어 최신 버전으로는 import가 깨진다 — 내려서 고정
+pip install "cmeel-urdfdom>=4,<5" "cmeel-tinyxml2>=10,<11"
+# seam_cv(perception/seam_cv.py) 의존성 — lerobot 기본 설치엔 없음
+pip install "scipy>=1.11" "scikit-image>=0.22"
+# RL 환경(MuJoCo) + 조이스틱 입력(joystick_input.py)
+pip install "mujoco>=3.1" "gymnasium>=0.29" evdev
+```
+
+실제 이 머신에 검증돼 있는 조합(`pip list` 기준, 2026-10): Python 3.10.21, lerobot 0.4.4, placo
+0.9.25, pin 3.8.0, cmeel-urdfdom 4.0.1, cmeel-tinyxml2 10.0.0, torch 2.10.0+cu128(CUDA 자동 설치됨,
+별도 index-url 불필요 — `pip install torch`만으로 GPU 빌드가 잡힌다), mujoco 3.13.0, gymnasium 1.3.0,
+scipy 1.15.3, scikit-image 0.25.2, evdev 1.9.3. GPU는 RTX 4060 Laptop(8GB) 기준.
+
+설치 후 확인:
+```bash
+python -c "import lerobot, mujoco, gymnasium, evdev, cv2, skimage; print('OK')"
+nvidia-smi   # GPU 인식 확인 (torch.cuda.is_available()도 True여야 함)
+```
+
+조이스틱(Logitech Extreme 3D Pro)을 쓸 거면 USB로 연결 후 `/dev/input/eventN`이 잡히는지(`ls
+/dev/input/ | grep event`) 확인 — 권한 문제로 evdev가 장치를 못 열면(Permission denied) 사용자를
+`input` 그룹에 추가(`sudo usermod -aG dialout,input $USER` 후 재로그인)하거나 udev 규칙을 추가할 것.
+
+## 0-1. 환경 활성화
 
 ```bash
 conda activate pac2026
 cd ~/pac2026   # 또는 저장소 루트
+```
+
+⚠️ 이 머신은 conda 설치본이 두 개다(`~/miniforge3`가 셸에 `conda init`돼 있고, `pac2026` 환경은
+별도의 `~/anaconda3` 밑에 있음). 위 `conda activate pac2026`가 `EnvironmentNameNotFound` 또는
+`CondaError: Run 'conda init' before 'conda activate'`로 실패하면 아래 중 하나로 고친다(한 번만
+하면 됨):
+
+```bash
+# 방법 A (권장, 한 줄, 다시 로그인할 필요 없음) — ~/.condarc에 다른 설치본의 envs 경로를 등록
+conda config --append envs_dirs /home/robot/anaconda3/envs
+
+# 방법 B (매번 새 터미널마다 다시 해야 함, 당장 한 번만 쓸 때)
+source ~/anaconda3/etc/profile.d/conda.sh && conda activate pac2026
+
+# 방법 C (항상 전체 경로로 직접 실행, activate 자체를 안 씀)
+/home/robot/anaconda3/envs/pac2026/bin/python ai_layer/tools/check_ee.py --scene curve
 ```
 
 모든 명령은 `PYTHONPATH=.` 를 붙여서 저장소 루트에서 실행한다(아래 예시 전부 포함돼 있음).
@@ -137,6 +186,7 @@ PYTHONPATH=. python ai_layer/train_rl.py --num-steps 200000 --bc-checkpoint outp
 
 | 증상 | 확인할 것 |
 |---|---|
+| `conda activate pac2026`가 안 됨 | "0-1. 환경 활성화"의 방법 A/B/C 참고 (이 머신은 conda 설치본이 두 개라 이름 등록이 필요) |
 | 뷰어 창이 안 뜸 | `--headless`를 실수로 안 줬는지(기본은 뜸), GPU/디스플레이 환경(`DISPLAY`) |
 | 조이스틱 방향이 반대 | `joystick_input.py` 단독 실행으로 버튼/축 이름 확인 후 `--invert-x/y/z/roll/pitch` |
 | `check_dataset.py`에서 선 인식 실패율 높음 | `tools/seam_preview.py`로 `SeamCVConfig` 재조정 |
