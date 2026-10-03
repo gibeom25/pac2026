@@ -29,7 +29,7 @@ from lerobot.utils.constants import ACTION, OBS_STATE
 
 from ai_layer.configs.so101_act_bc import ACTION_DIM, CHUNK_SIZE, DT_AI_SEC, IMAGE_KEY, STATE_DIM
 from ai_layer.control_bridge.chunk_builder import ChunkLimits
-from ai_layer.data import detect_dataset_kind, resolve_dataset_root
+from ai_layer.data import detect_dataset_kind, require_local_dataset
 from ai_layer.kinematics import JOINT_NAMES, URDF_PATH
 
 OK, WARN, FAIL = "✅", "⚠️ ", "❌"
@@ -62,7 +62,7 @@ def main() -> int:
             problems += 1
         print(f"{tag} {msg}")
 
-    root = resolve_dataset_root(args.repo_id, args.root)
+    root = require_local_dataset(args.repo_id, args.root)
     ds = LeRobotDataset(args.repo_id, root=root)
     meta = ds.meta
     kind = detect_dataset_kind(args.repo_id, root)
