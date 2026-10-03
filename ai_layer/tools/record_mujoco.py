@@ -538,12 +538,18 @@ def _run(args: argparse.Namespace, ctl: JoystickEEController, dataset, sampler: 
         tag = "scene={} variant={} ({})".format(scene, variant, mjcf_path.name)
         if dataset is None:
             tag += " [dry-run, 저장 안 함]"
-        input(f"\n[record] 에피소드 {saved_count + 1}/{args.num_episodes} — {tag} — 준비되면 Enter (Ctrl+C 종료) ")
+        prompt = f"\n[record] 에피소드 {saved_count + 1}/{args.num_episodes} — {tag} — 준비되면 Enter (Ctrl+C 종료) "
 
         if args.headless:
+            input(prompt)
             saved = _run_one_episode(args, ctl, model, data, renderer, dataset, viewer=None)
         else:
+            # 창을 Enter 입력 "전에" 띄운다 — 전에는 input() 뒤에 열어서, Enter 누르기 전까지는
+            # 창이 하나도 안 보여 "헤드리스로 도는 거 아니냐"는 오해를 샀다(2026-10-03). 창을 먼저
+            # 띄우고 홈 자세를 한 번 그린 다음 기다려야, 기다리는 동안에도 계속 떠 있는 게 보인다.
             with mujoco.viewer.launch_passive(model, data) as viewer:
+                viewer.sync()
+                input(prompt)
                 saved = _run_one_episode(args, ctl, model, data, renderer, dataset, viewer)
 
         if renderer is not None:
