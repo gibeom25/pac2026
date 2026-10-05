@@ -10,11 +10,16 @@ kinematic(물리 반응 없음)이고, 실제 물리 바디(ee_body, freejoint)�
 
 2026-09-23(3차, 최종): roll/pitch/yaw는 베이스 6개 버튼(joystick_input.rotation_rate())으로
 레이트 컨트롤한다. mocap_target이 위치+회전을 같이 명령하고, ee_body는 weld+접촉 반발력으로
-그 뒤를 따라간다 — "바닥에 실제로 닿는 것"은 이제 실패 조건이다(막대가 바닥/용지에 닿으면
-그 자리에서 자동으로 에피소드를 폐기한다, BTN_THUMB2와 동일 경로). 도구는 표면에 닿지 않고
-일정 간격을 띄운 채로 작업해야 한다. 비드(실리콘)는 접촉 여부와 무관하게 **신호(BTN_TRIGGER)만
-켜져 있으면** 찍히되, 중력의 영향을 받아 도구 끝이 아니라 바로 아래 바닥/용지 면에 떨어진
-자리에 찍힌다(수직으로만 낙하하는 단순화 — 실제 유체 시뮬레이션 아님).
+그 뒤를 따라간다. 도구는 표면에 닿지 않고 일정 간격을 띄운 채로 작업해야 한다. 비드(실리콘)는
+접촉 여부와 무관하게 **신호(BTN_TRIGGER)만 켜져 있으면** 찍히되, 중력의 영향을 받아 도구 끝이
+아니라 바로 아래 바닥/용지 면에 떨어진 자리에 찍힌다(수직으로만 낙하하는 단순화 — 실제 유체
+시뮬레이션 아님).
+
+2026-10-06(기범): "바닥 접촉 = 에피소드 자동 폐기"였던 걸 "도구 끝(tip)이 MIN_TIP_Z 밑으로
+못 내려가게 매 프레임 막는 것"으로 바꿨다 — 순간적으로 한 번 내려간 것 때문에 멀쩡한 녹화를
+통째로 날리는 대신, 애초에 접촉(비트 부러짐으로 이어질 수 있는 상황)이 잘 안 일어나게 막는 쪽이
+"비트 부러짐 방지" 취지에 더 맞는다(MIN_TIP_Z 선언부 참고). 녹화 중에만 적용되고, check_ee.py는
+접촉 진단용 도구라 그대로 둔다.
 
 데이터셋은 관절공간이 아니라 EE-native 포맷으로 직접 기록한다 (더 이상 관절이 없으므로):
   observation.state (9,) = [x, y, z, rot6d(6)]       -- kinematics.pose_to_state와 동일 표현
@@ -31,16 +36,17 @@ kinematic(물리 반응 없음)이고, 실제 물리 바디(ee_body, freejoint)�
       --repo-id <hf-user>/so101-mujoco-demo --root ./datasets/so101-mujoco-demo \
       --scene dashed --num-episodes 5
 
-BTN_TRIGGER를 누르고 있는 동안 그리퍼/도구 신호=1이고 비드가 찍힌다(높이 무관). 막대가 바닥에
-닿으면 그 즉시 에피소드가 자동 폐기되고 같은 번호로 재시도한다. 에피소드는 기본적으로 길이
-제한 없이 계속되고, **BTN_THUMB를 누르면 그 자리에서 바로 저장하고 종료**, **BTN_THUMB2를
-누르면 폐기하고 재시도**한다(원하면 --episode-seconds로 자동 종료 상한도 줄 수 있음). 끝나면
+BTN_TRIGGER를 누르고 있는 동안 그리퍼/도구 신호=1이고 비드가 찍힌다(높이 무관). 도구 끝이
+MIN_TIP_Z 밑으로 내려가려 하면 그 높이에서 막힌다(에피소드가 폐기되지 않음 — 2026-10-06).
+에피소드는 기본적으로 길이 제한 없이 계속되고, **BTN_THUMB를 누르면 그 자리에서 바로 저장하고
+종료**, **BTN_THUMB2를 누르면 폐기하고 재시도**한다(원하면 --episode-seconds로 자동 종료 상한도
+줄 수 있음). 끝나면
 EE 위치/자세가 바로 홈으로 초기화된다. 에피소드 사이에 Enter를 누르면 다음 녹화를 시작한다.
 Ctrl+C로 중단하면 그때까지 저장된 에피소드는 유지된다.
 
 2026-10-03(2차): --dry-run을 추가했다 — 저장(add_frame/save_episode/finalize)만 전부 건너뛰고
-나머지(조이스틱 조작, balanced 씬 전환, Enter로 다음 에피소드, BTN_THUMB/BTN_THUMB2, 바닥 접촉
-자동 폐기, 뷰어/비드)는 실제 수집과 완전히 동일하게 돈다 — "진짜 수집 절차 그대로 연습만 하고
+나머지(조이스틱 조작, balanced 씬 전환, Enter로 다음 에피소드, BTN_THUMB/BTN_THUMB2, 높이 제한,
+뷰어/비드)는 실제 수집과 완전히 동일하게 돈다 — "진짜 수집 절차 그대로 연습만 하고
 싶을 때" 쓴다. --repo-id 없이 바로 실행 가능:
   PYTHONPATH=. python ai_layer/tools/record_mujoco.py --dry-run --num-episodes 3
 
@@ -133,6 +139,14 @@ BEAD_STRIDE = 1  # 매 스텝 찍음 — 점 간격이 구슬 반지름보다 �
 FLOOR_Z = BEAD_RADIUS  # 바닥(world z=0) 위에 비드 구슬이 파묻히지 않고 얹혀 보이는 높이(낙하 종착점)
 GRAVITY_MPS2 = 9.8
 ROD_HALF_LENGTH = 0.025  # ee_rig.xml의 tool_rod size 두 번째 값과 맞춤 (5cm 막대의 절반)
+
+# 2026-10-06(기범): "바닥 접촉=에피소드 자동 폐기"였는데, 그러면 순간적으로 한 번 내려간 것
+# 때문에 멀쩡한 녹화를 통째로 날리게 된다("비트 부러짐 방지" 취지로는 오히려 접촉 자체를
+# 막는 게 맞음). 접촉을 감지해서 버리는 대신, 도구 끝(tip)이 이 높이 밑으로 못 내려가게
+# 매 프레임 반응형으로 막는다(아래 _run_one_episode 참고) — 녹화 중에만 적용(check_ee.py는
+# 접촉 진단용 도구라 그대로 둠). envs/seam_ground_truth.HOVER_Z(RL이 목표로 삼는 이상적인
+# 작업 높이)와 같은 값 — 실제 시연이 RL 목표 높이와 같은 높이에서 이뤄지게 하는 효과도 있음.
+MIN_TIP_Z = 0.01
 
 
 class BeadDrop:
@@ -387,7 +401,7 @@ def build_dataset(args: argparse.Namespace) -> LeRobotDataset:
 
 
 def _run_one_episode(args: argparse.Namespace, ctl: JoystickEEController, model, data, renderer, dataset, viewer) -> bool:
-    """에피소드 하나를 기록한다. 저장되면 True, 폐기(바닥 접촉/BTN_THUMB2)되면 False를 반환한다.
+    """에피소드 하나를 기록한다. 저장되면 True, 폐기(BTN_THUMB2)되면 False를 반환한다.
 
     dataset(및 renderer)이 None이면 --dry-run — 물리/조작/버튼/뷰어는 전부 동일하게 돌되 카메라
     렌더링과 add_frame/save_episode/clear_episode_buffer만 건너뛴다.
@@ -409,7 +423,6 @@ def _run_one_episode(args: argparse.Namespace, ctl: JoystickEEController, model,
     mujoco.mj_forward(model, data)
     bead_points: list[BeadDrop] = []
     prev_pose: np.ndarray | None = None
-    floor_touched = False
 
     t0 = time.perf_counter()
     max_steps = int(args.episode_seconds * args.fps) if args.episode_seconds else None
@@ -428,6 +441,13 @@ def _run_one_episode(args: argparse.Namespace, ctl: JoystickEEController, model,
         target_pos[0] = float(np.clip(target_pos[0], *WORKSPACE_X))
         target_pos[1] = float(np.clip(target_pos[1], *WORKSPACE_Y))
         target_pos[2] = float(np.clip(target_pos[2], *WORKSPACE_Z))
+        # 목표 위치 자체를 미리 막는다(반응형 보정만으로는 세게 계속 누르는 입력을 못 버틴다 —
+        # 실측해보니 반응형만으로는 tip이 MIN_TIP_Z를 뚫고 내려감). ee_body 원점(≈target_pos)
+        # 기준 tip 오프셋은 로컬 -z로 ROD_HALF_LENGTH*2(5cm)이므로, 월드 z 성분은 R_cmd[2,2]배만큼
+        # 줄어든다 — 이걸 역산해서 target_pos.z 하한을 잡는다(R_cmd는 직전 프레임 값, 자세가
+        # 프레임당 거의 안 변해서 충분히 정확한 근사).
+        min_target_z = MIN_TIP_Z + ROD_HALF_LENGTH * 2 * R_cmd[2, 2]
+        target_pos[2] = max(target_pos[2], min_target_z)
         data.mocap_pos[mocap_idx] = target_pos
 
         wx, wy, wz = ctl.rotation_rate(
@@ -443,8 +463,11 @@ def _run_one_episode(args: argparse.Namespace, ctl: JoystickEEController, model,
 
         tip = _rod_tip_world(data, rod_gid)
         contact_pos = _contact_pos(data, rod_gid, floor_gid)
-        if contact_pos is not None:
-            floor_touched = True  # 표면에 닿음 = 실패 조건 (아래서 폐기 처리)
+        if tip[2] < MIN_TIP_Z:
+            # 실측 tip이 한계 밑으로 내려간 만큼 다음 프레임 목표 위치를 끌어올린다 — 측정값
+            # 기반 반응형 보정이라 자세(기울기)와 무관하게 동작한다. 계속 눌러도 더 깊이는
+            # 안 들어가고 한계에서 버틴다(MIN_TIP_Z 선언부 참고).
+            target_pos[2] += MIN_TIP_Z - tip[2]
         if bit and step % BEAD_STRIDE == 0:
             bead_points.append(BeadDrop(tip.copy()))  # 막대 끝에서 생성, 이후 자유낙하
         for b in bead_points:
@@ -480,21 +503,16 @@ def _run_one_episode(args: argparse.Namespace, ctl: JoystickEEController, model,
             dataset.add_frame({**obs_frame, **action_frame, "task": args.task})
 
         if step % args.fps == 0:
-            touching = "접촉" if contact_pos is not None else "떠있음"
+            touching = "접촉" if contact_pos is not None else ("한계높이" if tip[2] <= MIN_TIP_Z + 1e-4 else "떠있음")
             print(
                 f"  t={step / args.fps:.1f}s pos=({target_pos[0]:.3f},{target_pos[1]:.3f},{target_pos[2]:.3f})"
                 f"  | trigger={bit:.0f} 막대={touching} 비드={len(bead_points)}점"
             )
 
         discard_btn = ctl.discard_requested()  # 엣지 트리거라 이 프레임에 한 번만 호출/소비
-        discard = discard_btn or floor_touched
-        if discard or ctl.episode_end_requested():
-            if floor_touched:
-                reason = "막대가 바닥/용지에 닿음 — 자동 폐기"
-            elif discard_btn:
-                reason = "BTN_THUMB2 눌림 — 폐기"
-            else:
-                reason = "BTN_THUMB 눌림 — 종료"
+        if discard_btn or ctl.episode_end_requested():
+            discard = discard_btn
+            reason = "BTN_THUMB2 눌림 — 폐기" if discard_btn else "BTN_THUMB 눌림 — 종료"
             print(f"\n[record] {reason}.")
             step += 1
             break
