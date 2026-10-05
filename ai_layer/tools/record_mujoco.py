@@ -308,6 +308,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--invert-z", action="store_true", help="EE z축 방향 반전")
     p.add_argument("--invert-roll", action="store_true", help="roll 방향 반전")
     p.add_argument("--invert-pitch", action="store_true", help="pitch 방향 반전")
+    p.add_argument(
+        "--recalibrate-joystick", action="store_true",
+        help="저장된 스로틀 영점(joystick_input.CALIBRATION_PATH)을 무시하고 다시 물어봄",
+    )
     args = p.parse_args()
     if args.repo_id is None and not args.dry_run:
         p.error("--repo-id는 --dry-run이 아니면 필수다.")
@@ -562,7 +566,7 @@ def _run(args: argparse.Namespace, ctl: JoystickEEController, dataset, sampler: 
 def main() -> None:
     args = parse_args()
 
-    ctl = JoystickEEController()
+    ctl = JoystickEEController(recalibrate=args.recalibrate_joystick)
 
     if args.dry_run:
         print("[record] --dry-run: 저장은 전부 건너뛴다 (조작/씬 전환/버튼/뷰어는 실제 수집과 동일).")

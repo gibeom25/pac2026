@@ -71,6 +71,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--invert-pitch", action="store_true", help="pitch 방향 반전")
     p.add_argument("--hz", type=float, default=30.0, help="제어/출력 주기")
     p.add_argument("--headless", action="store_true", help="뷰어 창 없이 콘솔 출력만 (기본: 창 띄움)")
+    p.add_argument(
+        "--recalibrate-joystick", action="store_true",
+        help="저장된 스로틀 영점(joystick_input.CALIBRATION_PATH)을 무시하고 다시 물어봄",
+    )
     return p.parse_args()
 
 
@@ -164,7 +168,7 @@ def _run(
 def main() -> None:
     args = parse_args()
 
-    ctl = JoystickEEController()
+    ctl = JoystickEEController(recalibrate=args.recalibrate_joystick)
 
     variant = args.variant if args.variant >= 0 else random.randint(0, N_VARIANTS - 1)
     mjcf_path = _mjcf_path(args.scene, variant)

@@ -25,18 +25,44 @@ weld+접촉 반발력으로 따라간다.
 (ee_velocity()의 vx/vy 계산 부분).
 
 단독 실행하면 라이브 진단 모드: 축/버튼 값을 실시간으로 출력한다.
-  PYTHONPATH=. python ai_layer/tools/joystick_input.py [--list]
+  PYTHONPATH=. python ai_layer/tools/joystick_input.py [--list] [--calibrate]
+
+2026-10-06: throttle 보정값을 파일로 저장/재사용하게 바꿨다 — "매번 켤 때마다 영점이 다르고,
+특히 z축이 한쪽 끝에서 영점으로 잡혀서 한 방향으로만 움직인다"는 문제(기범) 원인은, 이전엔
+스크립트를 켤 때마다 "그 순간 슬라이더가 어디 있든" 그 값을 그대로 영점으로 썼기 때문이다
+(자체 복원이 없는 슬라이더라 이전 세션에서 쓰던 자리에 그대로 멈춰 있는데, 그게 끝 쪽이면
+그대로 끝이 영점이 됨). 이제 처음 한 번 `_calibrate_throttle_zero()`로 "원하는 중립 위치"를
+직접 지정해서 `~/.config/pac2026/joystick_calibration.json`에 저장해두고, 그다음부터는 슬라이더가
+실제로 어디 있는지와 무관하게 항상 그 저장된 값을 영점 기준으로 쓴다(재보정은 --recalibrate).
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import select
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import evdev
 from evdev import ecodes
+
+CALIBRATION_PATH = Path.home() / ".config" / "pac2026" / "joystick_calibration.json"
+
+
+def load_calibration() -> dict | None:
+    if not CALIBRATION_PATH.exists():
+        return None
+    try:
+        return json.loads(CALIBRATION_PATH.read_text())
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def save_calibration(data: dict) -> None:
+    CALIBRATION_PATH.parent.mkdir(parents=True, exist_ok=True)
+    CALIBRATION_PATH.write_text(json.dumps(data, indent=2))
 
 
 def list_joysticks() -> None:
@@ -74,29 +100,53 @@ class JoystickState:
 _AXIS_CODES = (ecodes.ABS_X, ecodes.ABS_Y, ecodes.ABS_RZ, ecodes.ABS_THROTTLE)
 
 
+def _calibrate_throttle_zero(dev: evdev.InputDevice) -> int:
+    """스로틀 슬라이더의 "정지(z속도=0)" 위치를 대화형으로 지정받아 raw 값을 반환.
+
+    자체 복원이 없는 슬라이더라 "지금 어디 있는지"가 아니라 "원하는 중립 위치가 어디인지"를
+    물어봐야 한다 — 이걸 한 번 저장해두면 다음부터는 슬라이더가 실제로 어디 있든 이 값을
+    기준으로 삼는다(이전 방식: 켤 때마다 그 순간 위치를 영점으로 썼다가, 하필 끝에 놓여 있으면
+    그대로 끝이 영점이 돼버리는 문제가 있었음).
+    """
+    t_info = dev.absinfo(ecodes.ABS_THROTTLE)
+    print(
+        f"[joystick] 스로틀 보정 — 슬라이더를 z속도=0(정지)으로 쓸 중립 위치에 놓고 Enter "
+        f"(범위 {t_info.min}~{t_info.max}, 보통 중간쯤을 추천)"
+    )
+    input()
+    raw = dev.absinfo(ecodes.ABS_THROTTLE).value
+    margin = (t_info.max - t_info.min) * 0.1
+    if raw <= t_info.min + margin or raw >= t_info.max - margin:
+        print(
+            f"[joystick] ⚠️  지금 위치(raw={raw})가 끝(min/max) 근처입니다 — 이대로 저장하면 z가 "
+            f"한쪽 방향으로만 움직입니다. 괜찮으면 Enter, 다시 하려면 Ctrl+C."
+        )
+        input()
+    print(f"[joystick] 스로틀 영점 raw={raw}로 보정 완료.")
+    return raw
+
+
 class JoystickEEController:
-    def __init__(self, device_path: str | None = None):
+    def __init__(self, device_path: str | None = None, recalibrate: bool = False):
         path = device_path or find_joystick()
         self.dev = evdev.InputDevice(path)
         print(f"[joystick] connected: {self.dev.path} ({self.dev.name})")
         self._axis_info = {code: self.dev.absinfo(code) for code in _AXIS_CODES}
-        # ABS_THROTTLE은 스프링 복원이 없는 슬라이더 — 실제 장치에서 확인해보니 가만히 둔 상태에서
-        # value=0(범위 끝, 중앙이 아님)이었다. 고정 중앙(127.5)을 0으로 잡으면 슬라이더를 안 만져도
-        # 계속 최대 속도로 z가 움직여버리므로, 연결 시점의 실제 위치를 "정지" 기준으로 삼는다 —
-        # 사용자가 시작 전에 슬라이더를 원하는 중립 위치에 둔 채로 스크립트를 켜면 된다.
-        self._throttle_zero_raw = self.dev.absinfo(ecodes.ABS_THROTTLE).value
-        t_info = self._axis_info[ecodes.ABS_THROTTLE]
-        print(
-            f"[joystick] throttle 슬라이더 현재 위치(raw={self._throttle_zero_raw}, "
-            f"범위 {t_info.min}~{t_info.max})를 정지(z속도=0) 기준으로 잡습니다."
-        )
-        margin = (t_info.max - t_info.min) * 0.1
-        if self._throttle_zero_raw <= t_info.min + margin or self._throttle_zero_raw >= t_info.max - margin:
+
+        calib = None if recalibrate else load_calibration()
+        if calib is not None and "throttle_zero" in calib:
+            self._throttle_zero_raw = calib["throttle_zero"]
             print(
-                "[joystick] ⚠️  슬라이더가 끝(min/max) 근처에 있습니다 — 이 상태로 시작하면 z가 "
-                "한쪽 방향으로만 움직입니다. Ctrl+C로 종료하고 슬라이더를 중간쯤으로 옮긴 뒤 "
-                "다시 실행하는 걸 권장합니다 (지금 이대로 진행하면 반대 방향은 쓸 수 없음)."
+                f"[joystick] 저장된 스로틀 보정값 사용: raw={self._throttle_zero_raw} "
+                f"({CALIBRATION_PATH}, 재보정하려면 --recalibrate-joystick)"
             )
+        else:
+            if calib is None and not recalibrate:
+                print("[joystick] 저장된 보정값이 없습니다 — 처음 한 번만 하면 다음부턴 자동으로 재사용됩니다.")
+            self._throttle_zero_raw = _calibrate_throttle_zero(self.dev)
+            save_calibration({"throttle_zero": self._throttle_zero_raw, "device_name": self.dev.name})
+            print(f"[joystick] 저장됨: {CALIBRATION_PATH}")
+
         self.state = JoystickState()
         self._sync_from_device()
         self._edge_prev: dict[int, bool] = {}  # episode_end_requested()/discard_requested() 엣지 검출용
@@ -276,8 +326,8 @@ class JoystickEEController:
         self.dev.close()
 
 
-def _live_diagnostic() -> None:
-    ctl = JoystickEEController()
+def _live_diagnostic(recalibrate: bool = False) -> None:
+    ctl = JoystickEEController(recalibrate=recalibrate)
     print("[joystick] 스틱/슬라이더/버튼을 움직여보세요. Ctrl+C로 종료.\n")
     try:
         while True:
@@ -302,8 +352,19 @@ def _live_diagnostic() -> None:
 if __name__ == "__main__":
     p = argparse.ArgumentParser(description="조이스틱 연결/매핑 진단 도구.")
     p.add_argument("--list", action="store_true", help="연결된 입력 장치 목록만 출력하고 종료")
+    p.add_argument(
+        "--calibrate", action="store_true",
+        help="스로틀 영점만 다시 잡고 저장한 뒤 종료 (라이브 진단 없이)",
+    )
+    p.add_argument(
+        "--recalibrate", action="store_true",
+        help="저장된 보정값을 무시하고 다시 물어본 뒤(라이브 진단 모드로) 저장",
+    )
     args = p.parse_args()
     if args.list:
         list_joysticks()
+    elif args.calibrate:
+        ctl = JoystickEEController(recalibrate=True)
+        ctl.close()
     else:
-        _live_diagnostic()
+        _live_diagnostic(recalibrate=args.recalibrate)
