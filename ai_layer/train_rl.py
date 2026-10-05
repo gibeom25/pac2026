@@ -9,11 +9,17 @@ BC teacher 는 train_bc.py 폴더 체크포인트를 bc_inference.load_bc_checkp
   cd pac2026-team
   PYTHONPATH=. python ai_layer/train_rl.py --num-steps 200000
   PYTHONPATH=. python ai_layer/train_rl.py --num-steps 200000 --bc-checkpoint outputs/bc_act/last
+
+2026-10-06: --log-every마다 <out-dir>/metrics.jsonl에 한 줄씩 쌓는다(step, critic_loss,
+reward_mean, bc_action_distance_mean — BC teacher가 없으면 마지막 값은 null). "RL이 BC를
+얼마나 잘 따라가는지"를 학습 끝난 뒤 plot으로 분석하고 싶다는 요청으로 추가 — so101_seam_env.py의
+step() info["bc_action_distance"](정규화 액션 공간 L2 거리)를 윈도우 평균낸 값.
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
 import torch
@@ -78,6 +84,14 @@ def main() -> None:
 
     out_dir = Path(args_cli.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    # 2026-10-06(기범): "RL이 BC를 얼마나 잘 따라가는지"도 학습 추이로 보고 싶다는 요청 —
+    # env.step()의 info["bc_action_distance"](정규화 액션 공간 L2 거리, 작을수록 BC와 가까움)를
+    # log_every 윈도우 평균으로 묶어서 metrics.jsonl에 한 줄씩 쌓는다(콘솔 출력과 별개로 영구
+    # 저장 — 나중에 plot해서 "학습이 진행되며 BC에서 점점 멀어지는지/가까워지는지" 분석 가능).
+    metrics_path = out_dir / "metrics.jsonl"
+    metrics_file = metrics_path.open("a")
+    window_rewards: list[float] = []
+    window_bc_dists: list[float] = []
 
     def norm_obs(obs: dict) -> dict:
         """관측 dict(배치) -> 정규화 + device. 파이프라인 출력에서 관측 키만 남긴다 (None/스칼라 제거)."""
@@ -95,11 +109,14 @@ def main() -> None:
             else:
                 action = policy.select_action(norm_obs(obs))
 
-        next_obs, reward, terminated, truncated, _ = env.step(action.cpu())
+        next_obs, reward, terminated, truncated, info = env.step(action.cpu())
         done = torch.tensor([float(terminated or truncated)])
         reward_t = torch.tensor([reward])
         buffer.push(obs, action, reward_t, next_obs, done)
         obs = next_obs
+        window_rewards.append(reward)
+        if "bc_action_distance" in info:
+            window_bc_dists.append(info["bc_action_distance"])
         if truncated or terminated:
             obs, _ = env.reset()
 
@@ -138,8 +155,24 @@ def main() -> None:
 
             policy.update_target_networks()
 
-            if step % args_cli.log_every == 0:
-                print(f"step={step} critic_loss={critic_loss.item():.4f} reward={reward:.4f}")
+        if step % args_cli.log_every == 0 and step > 0:
+            reward_mean = sum(window_rewards) / len(window_rewards)
+            bc_dist_mean = sum(window_bc_dists) / len(window_bc_dists) if window_bc_dists else None
+            critic_loss_val = critic_loss.item()
+            critic_loss_json = None if critic_loss_val != critic_loss_val else critic_loss_val  # NaN != NaN
+            print(
+                f"step={step} critic_loss={critic_loss_val:.4f} reward_mean={reward_mean:.4f}"
+                + (f" bc_action_distance_mean={bc_dist_mean:.4f}" if bc_dist_mean is not None else "")
+            )
+            metrics_file.write(json.dumps({
+                "step": step,
+                "critic_loss": critic_loss_json,
+                "reward_mean": reward_mean,
+                "bc_action_distance_mean": bc_dist_mean,
+            }) + "\n")
+            metrics_file.flush()
+            window_rewards.clear()
+            window_bc_dists.clear()
 
         if step % args_cli.ckpt_every == 0 and step > 0:
             policy.save_pretrained(out_dir / f"sac_step{step:07d}")
@@ -147,7 +180,8 @@ def main() -> None:
         step += 1
 
     policy.save_pretrained(out_dir / "sac_final")
-    print(f"done. checkpoints in {out_dir}")
+    metrics_file.close()
+    print(f"done. checkpoints in {out_dir}, metrics in {metrics_path}")
 
 
 if __name__ == "__main__":
