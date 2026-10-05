@@ -13,6 +13,14 @@ action은 정확히 프레임 t+k+1의 저장값 = "pose(t+k) -> pose(t+k+1) 증
 chunk[k](=t+(k+1)dt 시점 명령)와 그대로 일치한다 (SO101BCDataset의 anchor_pose 재계산이 필요한
 이유는 실로봇에서 "리더 명령"과 "팔로워 실측"이 서로 다른 소스라 재기준이 필요했기 때문 — 이
 데이터셋은 state/action이 같은 실측 궤적에서 나와 애초에 어긋날 일이 없다).
+
+2026-10-06(기범): BC 학습 타깃에서 yaw(action의 drz)만 0으로 마스킹한다(ZERO_YAW, 기존
+so101_act_bc.py/so101_bc_dataset.py의 실로봇 경로와 동일 결정 — "로봇마다 다른 구조를
+반영해야 하는 건 사실 yaw뿐" 참고: 실로봇 IK가 5D(XYZ+roll/pitch)만 풀어서 yaw는 애초에 안
+받아들여지지만, roll/pitch는 실제로 쓰이는 자유도라 — 특히 코너/분기 구간에서 도포 각도가
+중요할 수 있어서 — 남겨둔다). observation.state(9,)의 rot6d는 그대로 6DOF를 담는다(관측에는
+yaw도 들어감 — 녹화 당시 실제 궤적을 복원 가능하게). 녹화 원본(raw, LeRobotDataset)에는 yaw가
+안 지워진 채 그대로 남아 다른 로봇/후속 분석에 쓸 수 있다.
 """
 
 from __future__ import annotations
@@ -33,7 +41,9 @@ from ai_layer.configs.so101_act_bc import (
     IMAGE_KEY,
     SEAM_FEATURE_DIM,
     STATE_DIM,
+    ZERO_YAW,
 )
+from ai_layer.kinematics import YAW_INDEX
 from ai_layer.perception.seam_cv import SeamGrooveDetector
 from ai_layer.perception.seam_features import seam_features_from_chw
 
@@ -145,10 +155,20 @@ class SO101EEDataset(Dataset):
         else:
             seam_feat = self._seam_features(item[self.camera_key])
 
+        action = item[ACTION].reshape(self.chunk_size, -1).float()
+        if ZERO_YAW:
+            # 2026-10-06(기범): yaw(drz)는 로봇마다 의미가 달라지는 월드 회전이고(실로봇 IK도
+            # 5D라 애초에 안 풀림, so101_act_bc.ZERO_YAW 참고), roll/pitch는 실로봇 IK가 실제로
+            # 받아들이는 자유도라 학습 타깃에 남긴다. 녹화된 원본(raw)에는 6DOF 그대로 있으니
+            # 다른 로봇/후속 분석에 그 데이터를 그대로 쓸 수 있다 — 여기서 BC 학습 타깃을 만들
+            # 때만 마스킹한다.
+            action = action.clone()
+            action[:, YAW_INDEX] = 0.0
+
         return {
             self.camera_key: item[self.camera_key],
             OBS_STATE: item[OBS_STATE].float(),
             OBS_ENV_STATE: torch.from_numpy(np.asarray(seam_feat, dtype=np.float32)),
-            ACTION: item[ACTION].reshape(self.chunk_size, -1).float(),
+            ACTION: action,
             "action_is_pad": item["action_is_pad"],
         }
