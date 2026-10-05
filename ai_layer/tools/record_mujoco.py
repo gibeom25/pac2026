@@ -566,7 +566,22 @@ def _run(args: argparse.Namespace, ctl: JoystickEEController, dataset, sampler: 
 def main() -> None:
     args = parse_args()
 
-    ctl = JoystickEEController(recalibrate=args.recalibrate_joystick)
+    if args.headless:
+        ctl = JoystickEEController(recalibrate=args.recalibrate_joystick)
+    else:
+        # 뷰어를 조이스틱 연결/보정보다 먼저 띄운다 — 2026-10-06: 저장된 스로틀 보정값이 없으면
+        # JoystickEEController() 생성자 안에서 터미널 input()으로 멈추는데, 그 시점엔 아직 MuJoCo
+        # 모델도 안 만들어져 있어서 창이 하나도 없는 채로 터미널만 기다리는 상태가 됐다 — 이게
+        # "헤드리스로 도는 거 아니냐"는 오해를 또 만들었다. 이 도구는 teleoperation용이라 GUI
+        # 없이 조종한다는 전제 자체가 성립하지 않으므로, 어떤 대기 단계든 예외 없이 창부터 뜬
+        # 다음에 하게 한다 (보정 끝나면 이 임시 창은 닫히고 _run()이 실제 씬 창을 새로 연다).
+        boot_scene, boot_variant = _build_combos(args.scene, args.variant)[0]
+        boot_model = mujoco.MjModel.from_xml_path(str(_mjcf_path(boot_scene, boot_variant)))
+        boot_data = mujoco.MjData(boot_model)
+        mujoco.mj_forward(boot_model, boot_data)
+        with mujoco.viewer.launch_passive(boot_model, boot_data) as boot_viewer:
+            boot_viewer.sync()
+            ctl = JoystickEEController(recalibrate=args.recalibrate_joystick)
 
     if args.dry_run:
         print("[record] --dry-run: 저장은 전부 건너뛴다 (조작/씬 전환/버튼/뷰어는 실제 수집과 동일).")

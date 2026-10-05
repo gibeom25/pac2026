@@ -168,8 +168,6 @@ def _run(
 def main() -> None:
     args = parse_args()
 
-    ctl = JoystickEEController(recalibrate=args.recalibrate_joystick)
-
     variant = args.variant if args.variant >= 0 else random.randint(0, N_VARIANTS - 1)
     mjcf_path = _mjcf_path(args.scene, variant)
     print(f"[check_ee] scene: {args.scene} variant={variant} ({mjcf_path.name})")
@@ -183,15 +181,22 @@ def main() -> None:
         invert_x=args.invert_x, invert_y=args.invert_y, invert_z=args.invert_z,
         invert_roll=args.invert_roll, invert_pitch=args.invert_pitch,
     )
+    ctl = None
     try:
         if args.headless:
+            ctl = JoystickEEController(recalibrate=args.recalibrate_joystick)
             _run(
                 ctl, model, data, viewer=None,
                 max_linear_speed=args.max_linear_speed, max_angular_speed=args.max_angular_speed,
                 hz=args.hz, **invert_kwargs,
             )
         else:
+            # 창을 조이스틱 연결/보정보다 먼저 띄운다 — record_mujoco.py와 동일 이유(2026-10-06):
+            # 저장된 보정값이 없으면 JoystickEEController() 생성자가 터미널 input()으로 멈추는데,
+            # 그 전에 창을 열어둬야 "창이 하나도 없이 멈춰서 헤드리스처럼 보이는" 오해가 안 생긴다.
             with mujoco.viewer.launch_passive(model, data) as viewer:
+                viewer.sync()
+                ctl = JoystickEEController(recalibrate=args.recalibrate_joystick)
                 _run(
                     ctl, model, data, viewer,
                     args.max_linear_speed, args.max_angular_speed, args.hz, **invert_kwargs,
@@ -199,7 +204,8 @@ def main() -> None:
     except KeyboardInterrupt:
         print("\n[check_ee] 종료.")
     finally:
-        ctl.close()
+        if ctl is not None:
+            ctl.close()
 
 
 if __name__ == "__main__":
