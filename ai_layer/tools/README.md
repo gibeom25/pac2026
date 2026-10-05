@@ -222,3 +222,21 @@ PYTHONPATH=. python ai_layer/tools/check_ee.py --scene dashed
 베이스 버튼으로 roll/pitch/yaw가 도는지, 트리거를 누르면 높이 상관없이 비드가 찍히는지, 막대를
 일부러 바닥에 대면 "실패(접촉!)"이 뜨는지 확인한다. 방향이 반대면 `joystick_input.py`의
 `ee_velocity()`에서 부호만 뒤집을 것.
+
+## record_gui.py — 데이터 수집 GUI (2026-10-06, 기범)
+
+`record_mujoco.py`와 똑같은 물리/조이스틱/데이터셋/balanced 샘플링을 쓰되, MuJoCo 자유시점
+뷰어 대신 **손목 카메라(데이터셋에 실제 저장되는 화면) + 오버뷰 카메라(scene_common.xml의 고정
+`overview` 카메라)**를 나란히 보여주고, 에피소드 시작/저장/폐기를 화면 버튼으로도 조작할 수
+있고(조이스틱 BTN_THUMB/BTN_THUMB2와 동일 기능 — 조이스틱이 메인, 버튼은 보조), (형태, variant)별
+수집 현황을 막대그래프로 실시간 표시한다(`Dear PyGui` 필요, `pip install dearpygui`).
+
+```bash
+PYTHONPATH=. python ai_layer/tools/record_gui.py --repo-id <hf-user>/so101-weld-demo --num-episodes 30
+PYTHONPATH=. python ai_layer/tools/record_gui.py --dry-run --num-episodes 3   # 저장 없이 연습
+```
+
+카메라 소스는 `MujocoDualCamera` 클래스 하나로 묶어뒀다 — 나중에 실로봇으로 녹화할 때는 이
+클래스만 실제 카메라 드라이버(예: `cv2.VideoCapture`, RealSense SDK)로 교체하면 되고, GUI/버튼/
+에피소드 진행 로직은 그대로 재사용 가능하게 설계했다. `record_mujoco.py`의 터미널 while 루프는
+그대로 남아 있다(안 건드림) — 터미널 플로우가 더 익숙하면 계속 그걸 써도 된다.

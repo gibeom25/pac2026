@@ -24,16 +24,18 @@ pip install "cmeel-urdfdom>=4,<5" "cmeel-tinyxml2>=10,<11"
 pip install "scipy>=1.11" "scikit-image>=0.22"
 # RL 환경(MuJoCo) + 조이스틱 입력(joystick_input.py)
 pip install "mujoco>=3.1" "gymnasium>=0.29" evdev
+# 데이터 수집 GUI(record_gui.py) — 카메라 화면/버튼/수집 현황 차트
+pip install dearpygui
 ```
 
 실제 이 머신에 검증돼 있는 조합(`pip list` 기준, 2026-10): Python 3.10.21, lerobot 0.4.4, placo
 0.9.25, pin 3.8.0, cmeel-urdfdom 4.0.1, cmeel-tinyxml2 10.0.0, torch 2.10.0+cu128(CUDA 자동 설치됨,
 별도 index-url 불필요 — `pip install torch`만으로 GPU 빌드가 잡힌다), mujoco 3.13.0, gymnasium 1.3.0,
-scipy 1.15.3, scikit-image 0.25.2, evdev 1.9.3. GPU는 RTX 4060 Laptop(8GB) 기준.
+scipy 1.15.3, scikit-image 0.25.2, evdev 1.9.3, dearpygui 2.3.1. GPU는 RTX 4060 Laptop(8GB) 기준.
 
 설치 후 확인:
 ```bash
-python -c "import lerobot, mujoco, gymnasium, evdev, cv2, skimage; print('OK')"
+python -c "import lerobot, mujoco, gymnasium, evdev, cv2, skimage, dearpygui; print('OK')"
 nvidia-smi   # GPU 인식 확인 (torch.cuda.is_available()도 True여야 함)
 ```
 
@@ -77,9 +79,18 @@ source ~/anaconda3/etc/profile.d/conda.sh && conda activate pac2026
 - Logitech Extreme 3D Pro가 안 잡히면 `joystick_input.py`를 단독 실행해서 눌린 버튼 이름이
   출력되는지 확인 (버튼 매핑 디버그용).
 
-## 1단계 — 데이터 수집 (`tools/record_mujoco.py`)
+## 1단계 — 데이터 수집
+
+GUI(`tools/record_gui.py`, 추천)와 터미널(`tools/record_mujoco.py`) 둘 다 똑같은 물리/조이스틱/
+데이터셋/balanced 샘플링을 쓴다 — GUI는 손목/오버뷰 카메라 화면과 수집 현황 차트를 보여주고
+화면 버튼으로도 조작 가능, 터미널은 더 가볍다(의존성 적음). 아무거나 골라도 됨.
 
 ```bash
+# GUI (권장) — 카메라 화면 + 버튼 + (형태,variant)별 수집 현황 차트
+PYTHONPATH=. python ai_layer/tools/record_gui.py \
+    --repo-id <본인id>/so101-weld-demo --num-episodes 30
+
+# 또는 터미널
 PYTHONPATH=. python ai_layer/tools/record_mujoco.py \
     --repo-id <본인id>/so101-weld-demo --num-episodes 30
 ```
@@ -93,10 +104,12 @@ PYTHONPATH=. python ai_layer/tools/record_mujoco.py \
   "오늘은 curve만 모아야지" 식으로 신경 쓸 필요 없이 그냥 계속 돌리면 된다.
   - 특정 형태만 집중적으로 모으고 싶으면 `--scene dashed` 처럼 이름을 직접 주면 그 형태 안에서만
     (variant로) 균형 샘플링한다.
-- 조작: 트리거를 누르고 있는 동안 비드가 찍힌다. **BTN_THUMB**로 그 자리에서 저장+종료(에피소드
-  길이는 기본 무제한), **BTN_THUMB2**로 폐기+재시도. 막대가 바닥/용지에 닿으면 자동 폐기된다 —
-  도구는 표면에 닿지 않고 살짝 띄운 채로 작업해야 한다.
-- 에피소드 사이 Enter로 다음 녹화 시작. Ctrl+C로 중단해도 그때까지 저장된 에피소드는 유지된다.
+- 조작: 트리거를 누르고 있는 동안 비드가 찍힌다. **BTN_THUMB**(GUI는 Save && End 버튼)로 그
+  자리에서 저장+종료(에피소드 길이는 기본 무제한), **BTN_THUMB2**(GUI는 Discard && Retry
+  버튼)로 폐기+재시도. 도구 끝이 일정 높이(1cm, "비트 부러짐 방지") 밑으로는 안 내려가게 막혀
+  있다 — 바닥에 닿아도 더 이상 에피소드가 폐기되지 않는다(2026-10-06 변경).
+- (터미널) 에피소드 사이 Enter로 다음 녹화 시작 / (GUI) Start Episode 버튼. Ctrl+C(터미널) 또는
+  창 닫기(GUI)로 중단해도 그때까지 저장된 에피소드는 유지된다.
 
 ## 2단계 — 데이터 점검 (`tools/check_dataset.py`)
 
