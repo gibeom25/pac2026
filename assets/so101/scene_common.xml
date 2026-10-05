@@ -1,0 +1,54 @@
+<mujoco model="scene_common">
+  <!-- 2026-10-06: 30개 scene_a4*.xml이 전부 텍스처 파일명만 다르고 나머지(바닥/조명/A4 용지
+       배치)는 완전히 동일한 복붙이었다 — 공통 부분을 여기로 뽑아서 각 scene_a4*.xml은
+       <include file="scene_common.xml"/> 하나 + 자기 텍스처 <asset> 2줄만 남게 줄였다
+       (배경 바꿀 때 30곳 말고 여기 한 곳만 고치면 됨).
+
+       책상 위 작업 시나리오 배경(책상=나무색, 바닥=진한회색, 벽=연한회색)을 추가했다. "floor"
+       지오메트리는 실제 충돌/접촉 판정에 쓰인다(record_mujoco.py FLOOR_GEOM_NAME, so101_seam_env.py
+       둘 다 이 이름으로 찾음) — 이름/위치(z=0)/contype/conaffinity는 그대로 두고 재질(색)만
+       체커무늬 바닥에서 "책상 윗면"으로 바꿨다. room_floor/wall은 순수 배경용(contype/conaffinity=0,
+       충돌 없음) — 오버뷰 카메라가 책상 너머를 봤을 때 허허벌판이 아니라 방처럼 보이게 하는 용도라
+       실측 치수가 아니라 "책상 위" 느낌만 내는 근사값(책상 높이 0.75m 가정). -->
+  <visual>
+    <headlight diffuse="0.6 0.6 0.6" ambient="0.3 0.3 0.3" specular="0 0 0" />
+    <rgba haze="0.15 0.25 0.35 1" />
+    <global azimuth="160" elevation="-20" />
+  </visual>
+
+  <asset>
+    <texture type="skybox" builtin="gradient" rgb1="0.3 0.5 0.7" rgb2="0 0 0" width="512" height="3072" />
+    <material name="desk" rgba="0.55 0.38 0.22 1" specular="0.1" shininess="0.05" reflectance="0.02" />
+    <material name="room_floor" rgba="0.22 0.22 0.22 1" specular="0.05" shininess="0.02" />
+    <material name="wall" rgba="0.78 0.78 0.78 1" specular="0.02" shininess="0.01" />
+  </asset>
+
+  <worldbody>
+    <light pos="0 0 3.5" dir="0 0 -1" directional="true" />
+
+    <!-- 전체(오버뷰) 카메라 — ee_body에 안 붙은 고정 카메라, 책상 전체를 비스듬히 내려다본다.
+         실물로 치면 "작업대를 바라보는 고정 삼각대 카메라" 역할(GUI 쪽 TRAINING 녹화 화면에서
+         손목 카메라와 나란히 띄움). 각도는 근사값 — 실제로 띄워보고 조정 필요. -->
+    <camera name="overview" pos="0.25 -0.55 0.5" euler="48 0 0" fovy="55"/>
+
+    <!-- 책상 윗면 — 실제 충돌면(이름/충돌 채널은 기존 floor 그대로, 재질+크기만 변경). 기존엔
+         무한 평면(size 0 0)이라 오버뷰 카메라에서 바닥/벽이 전혀 안 보였다 — 작업공간
+         (x 0.05~0.45, y -0.20~0.20)을 넉넉히 덮으면서 가장자리가 보이게 유한 크기(1.2m x 0.8m)로
+         바꿨다. 유한 평면도 충돌 판정은 그 범위 안에서 기존과 동일하게 동작한다. -->
+    <geom name="floor" size="0.6 0.4 0.05" pos="0 0 0" type="plane" material="desk" contype="1" conaffinity="3" />
+
+    <!-- 방 바닥(배경용, 충돌 없음) — 책상 아래로 책상 높이만큼(근사 0.75m) 내려서 배치. -->
+    <geom name="room_floor" size="3 3 0.05" pos="0 0 -0.75" type="plane" material="room_floor"
+        contype="0" conaffinity="0" />
+
+    <!-- 뒷벽(배경용, 충돌 없음) — 책상 뒤(+y)에 수직으로. -->
+    <geom name="wall_back" size="3 1.5 0.05" pos="0 1.0 0.75" euler="90 0 0" material="wall"
+        contype="0" conaffinity="0" />
+
+    <!-- A4 용지: 긴 축(297mm)을 world x(로봇 전방)에 맞춰 배치. 경로 영역(x 0.15~0.35)이 용지
+         안쪽(x 0.10~0.40)에 들어오도록 중심을 x=0.25에 둠. 재질(a4_weld_seam)은 각 scene_a4*.xml이
+         자기 텍스처로 정의해서 넘겨준다. -->
+    <geom name="a4_paper" type="plane" size="0.1485 0.105 0.001" pos="0.25 0 0.001"
+        material="a4_weld_seam" contype="0" conaffinity="0" />
+  </worldbody>
+</mujoco>
