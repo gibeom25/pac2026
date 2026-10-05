@@ -1,8 +1,18 @@
 # 학습 가이드 (데이터 수집 → BC → RL)
 
-2026-10-03 기준 현재 파이프라인(EE-only 리그 + 조이스틱 + balanced 데이터 수집) 전체를 처음부터
-끝까지 돌리는 실전 순서다. 각 단계는 이전 단계가 통과해야 다음으로 넘어가는 게 맞다 — 중간에
-건너뛰면 다음 단계에서 원인 찾기 어려운 에러가 난다.
+2026-10-06 기준 현재 파이프라인(EE-only 리그 + 조이스틱/GUI + balanced 데이터 수집) 전체를
+처음부터 끝까지 돌리는 실전 순서다. 각 단계는 이전 단계가 통과해야 다음으로 넘어가는 게 맞다 —
+중간에 건너뛰면 다음 단계에서 원인 찾기 어려운 에러가 난다.
+
+**최근 변경사항 요약** (이 문서가 안 맞는 것 같으면 먼저 여기부터 확인):
+- 데이터 수집 GUI(`record_gui.py`) 추가 — 손목/오버뷰 카메라 화면 + 버튼 + 수집 현황 차트.
+- 녹화 중 바닥 접촉은 더 이상 에피소드를 폐기하지 않는다 — 도구 끝이 1cm 밑으로 안 내려가게
+  막는 걸로 바뀜(1단계 참고). **RL 쪽은 그대로 접촉=즉시 종료+패널티**(5단계 참고) — 데이터
+  수집과 RL 환경의 규약이 이제 서로 다르다는 점에 주의.
+- 조이스틱 스로틀(z축) 영점을 처음 한 번만 물어보고 저장해서 재사용한다(0단계 참고).
+- `train_rl.py`가 `metrics.jsonl`에 보상/BC 추종 점수를 기록한다(5단계 참고).
+- 시뮬레이션 배경이 책상/바닥/벽으로 꾸며졌다(자동 적용, 할 일 없음).
+- BC 학습 타깃에서 yaw(회전 중 z축)만 제외하고 roll/pitch는 유지한다(3단계 참고).
 
 아키텍처/설계 배경은 [`README.md`](README.md)(3.3절 BC/3.4절 RL 구현 설명)와
 [`tools/README.md`](tools/README.md)(도구별 상세 옵션)를 참고. 이 문서는 "지금 뭘 실행해야
@@ -43,6 +53,12 @@ nvidia-smi   # GPU 인식 확인 (torch.cuda.is_available()도 True여야 함)
 /dev/input/ | grep event`) 확인 — 권한 문제로 evdev가 장치를 못 열면(Permission denied) 사용자를
 `input` 그룹에 추가(`sudo usermod -aG dialout,input $USER` 후 재로그인)하거나 udev 규칙을 추가할 것.
 
+**스로틀(z축) 영점 보정**: 처음 조이스틱을 쓰는 녹화 도구를 실행하면 "슬라이더를 중립 위치에
+놓고 Enter"를 한 번 물어보고 `~/.config/pac2026/joystick_calibration.json`에 저장한다 — 그 뒤로는
+슬라이더가 실제로 어디 있든 그 저장값을 기준으로 삼는다(다시 물어볼 필요 없음). 슬라이더 느낌이
+이상하거나 조이스틱을 바꿨으면 `--recalibrate-joystick`(record_mujoco.py/check_ee.py/
+record_gui.py 공통)로 다시 잡을 것.
+
 ## 0-1. 환경 활성화
 
 ```bash
@@ -78,6 +94,9 @@ source ~/anaconda3/etc/profile.d/conda.sh && conda activate pac2026
   `joystick_input.py`의 `ee_velocity()`/`rotation_rate()` 호출부 `--invert-*` 플래그로 고친다.
 - Logitech Extreme 3D Pro가 안 잡히면 `joystick_input.py`를 단독 실행해서 눌린 버튼 이름이
   출력되는지 확인 (버튼 매핑 디버그용).
+- 손목/오버뷰 카메라가 실제로 어떻게 보이는지(check_ee.py는 자유시점 디버그 화면이라 카메라
+  화면 자체는 안 보여줌) 먼저 보고 싶으면 `record_gui.py --dry-run --num-episodes 1`로 저장 없이
+  GUI만 띄워볼 수 있다(1단계 참고).
 
 ## 1단계 — 데이터 수집
 
@@ -136,6 +155,9 @@ PYTHONPATH=. python ai_layer/train_bc.py \
 
 - `robot_type`으로 데이터셋 포맷(EE-native/관절공간)을 자동 판별해서 맞는 Dataset 클래스를
   고른다 — 설정할 것 없음.
+- 액션 중 yaw(회전 z축, drz)는 학습 타깃에서 0으로 마스킹된다 — 실로봇 IK가 5D(XYZ+roll/pitch)만
+  풀어서 yaw는 애초에 반영이 안 되기 때문(roll/pitch는 실제로 쓰이는 자유도라 그대로 학습함).
+  녹화 원본에는 yaw도 그대로 남아 있다.
 - 먼저 `--epochs 20~30 --batch-size 8` 정도로 짧게 돌려서 loss가 내려가는지(과적합 시험) 확인한
   다음 본 학습으로 늘리는 걸 추천.
 - 결과: `outputs/bc_act/last/`(config.json, model.safetensors, preprocessor/postprocessor —
@@ -165,10 +187,15 @@ PYTHONPATH=. python ai_layer/train_rl.py \
   쓴다. 안 주면 R_imitation=0으로 순수 R_track(선 추종)+R_smooth+R_coverage만으로 학습한다.
 - 매 에피소드 씬(형태+variant)이 무작위로 바뀐다 — 한 가지 모양에 과적합되지 않게.
 - 안전장치(코드 수정 없이 항상 켜져 있음): 선에서 3cm(`SO101SeamEnvCfg.off_seam_safety_dist`)
-  이상 떨어지면 정책이 트리거를 켜도 비드 분사가 강제로 꺼진다. 막대가 바닥/용지에 닿으면 그
-  즉시 에피소드가 끝나고 큰 음의 보상이 들어간다(`floor_contact_penalty`) — 데이터 수집 때
-  "접촉=자동 폐기"와 같은 규약을 RL 보상으로 반영한 것.
-- 결과: `outputs/rl_sac/sac_final`(및 `--ckpt-every` 간격 중간 체크포인트).
+  이상 떨어지면 정책이 트리거를 켜도 비드 분사가 강제로 꺼진다. **막대가 바닥/용지에 닿으면
+  그 즉시 에피소드가 끝나고 큰 음의 보상이 들어간다**(`floor_contact_penalty`) — 1단계(실제
+  녹화)는 접촉 시 높이 제한으로만 막고 에피소드를 안 버리도록 바뀌었지만, RL 환경은 여전히
+  "접촉=즉시 종료+패널티"다. 둘이 다른 규약이라는 점에 주의할 것 — RL이 접촉 자체를 피하는
+  법을 배우게 하려는 의도라 일부러 안 맞췄다.
+- 결과: `outputs/rl_sac/sac_final`(및 `--ckpt-every` 간격 중간 체크포인트)와
+  `outputs/rl_sac/metrics.jsonl` — `--log-every` 윈도우마다 step/critic_loss/reward_mean/
+  bc_action_distance_mean(RL 행동이 BC 행동과 정규화 공간에서 얼마나 떨어져 있는지, BC
+  teacher 없으면 null) 한 줄씩. 학습 끝나고 plot해서 추이 보는 용도.
 - 학습 속도 체감이 필요하면 먼저 `--num-steps 2000` 정도로 짧게 돌려서 `critic_loss`/`reward`
   로그가 정상 범위에서 움직이는지 보고, 문제 없으면 본 학습(수만~수십만 스텝)으로 늘릴 것 —
   오래 걸리는 작업이니 백그라운드로 돌리는 걸 추천.
@@ -179,8 +206,9 @@ PYTHONPATH=. python ai_layer/train_rl.py \
 conda activate pac2026
 cd ~/pac2026
 
-# 1. 수집 (balanced 샘플링, 30개 모으면 6형태 고르게 들어감)
-PYTHONPATH=. python ai_layer/tools/record_mujoco.py --repo-id me/so101-weld-demo --num-episodes 30
+# 1. 수집 (balanced 샘플링, 30개 모으면 6형태 고르게 들어감) — GUI 추천
+PYTHONPATH=. python ai_layer/tools/record_gui.py --repo-id me/so101-weld-demo --num-episodes 30
+# 또는 터미널만: record_mujoco.py --repo-id me/so101-weld-demo --num-episodes 30
 
 # 2. 점검 (❌ 없을 때까지)
 PYTHONPATH=. python ai_layer/tools/check_dataset.py --repo-id me/so101-weld-demo --root datasets/me/so101-weld-demo
@@ -200,8 +228,10 @@ PYTHONPATH=. python ai_layer/train_rl.py --num-steps 200000 --bc-checkpoint outp
 | 증상 | 확인할 것 |
 |---|---|
 | `conda activate pac2026`가 안 됨 | "0-1. 환경 활성화"의 방법 A/B/C 참고 (이 머신은 conda 설치본이 두 개라 이름 등록이 필요) |
-| 뷰어 창이 안 뜸 | `--headless`를 실수로 안 줬는지(기본은 뜸), GPU/디스플레이 환경(`DISPLAY`) |
+| 뷰어/GUI 창이 안 뜸 | `--headless`를 실수로 안 줬는지(기본은 뜸), GPU/디스플레이 환경(`DISPLAY`). 창이 뜨기 전에 터미널에서 멈춘 것처럼 보이면 조이스틱 보정(처음 1회) 또는 데이터셋 덮어쓰기 확인 프롬프트 — 터미널을 보면 질문이 떠 있을 것(창은 그 전에 이미 떠 있어야 함) |
+| `record_gui.py` 실행하니 `ModuleNotFoundError: dearpygui` | `pip install dearpygui` (0단계 참고) |
 | 조이스틱 방향이 반대 | `joystick_input.py` 단독 실행으로 버튼/축 이름 확인 후 `--invert-x/y/z/roll/pitch` |
+| z축(스로틀)이 한쪽 방향으로만 움직임 | 영점 보정이 끝 쪽에 잡혔을 가능성 — `--recalibrate-joystick`로 다시 잡을 것(0단계 참고) |
 | `check_dataset.py`에서 선 인식 실패율 높음 | `tools/seam_preview.py`로 `SeamCVConfig` 재조정 |
 | `check_dataset.py`에서 증분 크기 초과 비율 높음 | 녹화할 때 조이스틱을 더 천천히 움직이거나 `--max-linear-speed` 낮춰서 재녹화 |
 | BC loss가 안 내려감 | 에피소드 수/다양성 부족(1단계 balanced 분포 확인), `--epochs` 늘리기, 데이터셋에

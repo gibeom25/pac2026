@@ -3,6 +3,11 @@
 설계 문서: [`../docs/AI_추론계층_프레임워크.md`](../docs/AI_추론계층_프레임워크.md). 이 폴더는 그 문서
 3.3절(BC), 3.4절(RL)을 실제로 동작하는 코드로 구현한 것이다. 지연보정(4장)은 아직 미구현.
 
+> **지금 뭘 실행해야 하는지는 [`TRAINING_GUIDE.md`](TRAINING_GUIDE.md)를 볼 것.** 이 문서는
+> 그 아래 설계 결정/히스토리 쪽에 더 가깝다 — 특히 "엔드투엔드 흐름"/"검증 상태" 절은 2026-09-21~22
+> (리더암 실물 녹화 전제) 시점 기록이고, 2026-09-23 조이스틱+EE-only 전환 이후로는
+> TRAINING_GUIDE.md/tools/README.md 쪽이 실제 현재 상태를 반영한다.
+
 ## 왜 Transformer를 새로 짜지 않았는가
 
 lerobot에 이미 검증된 ACT(Action Chunking Transformer) 구현(`lerobot.policies.act`)이 있고,
@@ -23,59 +28,61 @@ MuJoCo는 GPU 없이도 가볍고 안정적이며, **이 코딩 세션 안에서
 ```
 ai_layer/
   kinematics.py              PAC_Supermoon URDF FK/IK (`tcp_link`) + ActionChunk 증분 EEF-delta + rot6d state
+                              (실물/관절공간 경로용. EE-native 경로는 이미 EEF라 이 모듈을 거의 안 씀)
   perception/seam_cv.py      Seam/Groove 고전 CV 모듈 (docs 3.1절)
-  configs/so101_act_bc.py    ACTConfig 프리셋: chunk_size=32, use_vae=False, EEF-delta 7dim 액션
+  configs/so101_act_bc.py    ACTConfig 프리셋: chunk_size=32, use_vae=False, EEF-delta 7dim 액션, ZERO_YAW
   configs/so101_sac.py       SACConfig 프리셋: 연속 6dim(EEF-delta) + 이산 1(그리퍼), discount=0.97
-  data/so101_bc_dataset.py   lerobot 원본(관절공간) 데이터셋 -> EEF-delta + seam 특징 변환 wrapper
-                              (fps/관절순서 검사, seam 특징 캐시, 정규화 통계 compute_stats)
+  data/__init__.py            detect_dataset_kind()/load_bc_dataset()/require_local_dataset() — robot_type으로
+                              joint/ee 포맷을 자동 판별해 맞는 Dataset을 골라줌 (train_bc.py, check_dataset.py가 씀)
+  data/so101_bc_dataset.py   lerobot 원본(관절공간, 실물 lerobot-record) 데이터셋 -> EEF-delta + seam 특징 wrapper
+  data/so101_ee_dataset.py   record_mujoco.py/record_gui.py가 만든 EE-native 데이터셋 wrapper(변환 불필요,
+                              yaw만 BC 타깃에서 마스킹)
   bc_inference.py             체크포인트 폴더 로드(정책+전/후처리) + 청크 예측. RL teacher·ActionChunk 직렬화 공용
   perception/seam_features.py 이미지 -> seam 특징(5). 학습과 추론이 같은 함수 사용
   control_bridge/protocol.py  송지수 제어 규약 복사본 (ActionChunk/StateSnapshot + 고정 크기 코덱, 원본 da9f29f)
   control_bridge/chunk_builder.py   모델 청크 (T,7) -> ActionChunk. 스텝 한계 클립, eef 매핑 스위치(EefMode)
   control_bridge/snapshot_adapter.py StateSnapshot -> observation.state(9D), anchor 선택 (OBS_POSE / COMMIT_END)
   control_bridge/ai_node.py   실행 노드: 스냅샷 SUB -> 이미지 -> ACT -> ActionChunk PUB (ZeroMQ ipc)
+  tools/record_mujoco.py      조이스틱 -> MuJoCo EE 리그(ee_rig.xml) -> EE-native LeRobotDataset 녹화 (터미널)
+  tools/record_gui.py         위와 동일 로직, Dear PyGui GUI(카메라 화면/버튼/수집 현황 차트)
+  tools/joystick_input.py     Logitech Extreme 3D Pro(evdev) -> EE 속도/회전/그리퍼, 스로틀 영점 보정/저장
+  tools/check_ee.py           녹화 없이 조이스틱->EE 매핑/충돌 빠르게 확인
+  tools/check_dataset.py      녹화 직후 데이터셋 검증 (fps/차원/seam인식률/증분크기 등)
   tools/chunk_bridge_test.py  규약 왕복 + 원본 코덱/validator 대조
   tools/fk_smoke.py           실로봇 URDF FK 스모크
-  tools/bc_synthetic_test.py  가짜 데이터셋으로 BC 경로 끝-끝 실행 검증
-  tools/README.md             env_lerobot 설치 순서
-  rl/reward.py                R_imitation + R_track + R_smooth (docs 3.4절), 가중치 스케줄링
+  tools/bc_synthetic_test.py  가짜 데이터셋으로 BC 경로 끝-끝 실행 검증(관절공간 경로)
+  tools/rl_env_smoke.py       so101_seam_env.py 스모크(홈 위치/드리프트/안전 컷오프/바닥접촉 종료 등)
+  tools/README.md             도구별 상세 옵션 + 환경 설치 순서
+  rl/reward.py                R_imitation + R_track + R_smooth + R_coverage, 가중치 스케줄링
   rl/replay_buffer.py         단일 프로세스 SAC용 최소 리플레이 버퍼
-  envs/so101_seam_env.py      MuJoCo 기반 Gymnasium 환경 — SO-101 + 절차적 경로 + placo IK
-  train_bc.py                 BC 학습 진입점 (lerobot ACTPolicy 그대로 사용)
+  envs/so101_seam_env.py      MuJoCo 기반 Gymnasium 환경 — ee_rig.xml(EE-only, IK 없음) 기반, 매 에피소드
+                              30가지 (형태,variant) 중 무작위 ground-truth 경로, 안전 컷오프+바닥접촉 종료
+  envs/seam_ground_truth.py   textures/gen_seam_textures.py가 구운 실제 경로(.json) -> world 좌표 폴리라인
+  train_bc.py                 BC 학습 진입점 (lerobot ACTPolicy 그대로 사용, robot_type 자동 판별)
   train_rl.py                 RL 학습 진입점 (lerobot SACPolicy 그대로 사용, BC 체크포인트를
-                               R_imitation teacher로 선택적 로드) — 일반 파이썬 스크립트, IsaacLab
-                               의존성 없음
+                               R_imitation teacher로 선택적 로드, metrics.jsonl 로깅) — 일반 파이썬
+                               스크립트, IsaacLab 의존성 없음
 ```
 
 ## 엔드투엔드 흐름
 
-⚠️ **1단계(실물 데이터 수집)는 아직 시작 전**: SO-101 leader 하드웨어 통신 문제(장시간 디버깅 끝에
-원인이 USB-시리얼 어댑터 보드 자체의 하드웨어 결함으로 확인됨)는 보드 교체로 해결됨 — 캘리브레이션까지
-완료된 상태. 2~3단계(BC/RL 학습 코드와 시뮬레이션 파이프라인)는 하드웨어와 무관하게 이미 동작 확인됨.
+**현재(2026-10-06) 실제 쓰는 흐름은 데이터 수집부터 RL까지 전부 시뮬레이션(MuJoCo) +
+조이스틱/GUI다** — 실물 SO-101 leader로 티칭하는 아래 1단계는 아직 미착수 상태 그대로다.
+전체 단계별 실행 명령/옵션은 [`TRAINING_GUIDE.md`](TRAINING_GUIDE.md)에 있다 — 요약만 적으면:
 
 ```
-0. 환경: /home/dy/pac2026/env_lerobot (lerobot 0.4.4). 설치 순서는 tools/README.md.
+0. 환경 설치/활성화, 1. 데이터 수집(record_gui.py 또는 record_mujoco.py, 조이스틱),
+2. 데이터 점검(check_dataset.py), 3. BC 학습(train_bc.py), 4. RL 환경 스모크(rl_env_smoke.py),
+5. RL 학습(train_rl.py, BC 체크포인트를 참고 teacher로 선택 사용) — 전부 TRAINING_GUIDE.md 참고.
+```
 
-1. 데이터 수집 (SO-101 leader로 티칭, 실물). fps는 반드시 30 (= DT_AI_SEC 1/30).
-   lerobot-record --robot.type=so101_follower --robot.port=/dev/ttyACM_follower \
-                   --teleop.type=so101_leader --teleop.port=/dev/ttyACM_leader \
-                   --robot.cameras='{"wrist": ...}' --dataset.fps=30 \
-                   --dataset.repo-id=<user>/so101-weld-demo ...
+3단계(추론 노드, 제어 계층 연결)는 아래 "2026-09-21" 검증 기록 당시 그대로이고 아직 실물
+연결은 안 했다:
 
-2. BC 학습 (정규화 통계는 변환 후 값으로 자동 계산, 체크포인트는 폴더 단위)
-   cd pac2026-team
-   PYTHONPATH=. /home/dy/pac2026/env_lerobot/bin/python ai_layer/train_bc.py \
-       --repo-id <user>/so101-weld-demo --root <로컬경로> --epochs 100
-   → outputs/bc_act/last/ (config.json, model.safetensors, policy_preprocessor.json, policy_postprocessor.json ...)
-
-3. 추론 노드 (제어 계층과 연결). 제어 쪽이 `run_live.py --ai external` 로 떠 있을 때
-   PYTHONPATH=. /home/dy/pac2026/env_lerobot/bin/python ai_layer/control_bridge/ai_node.py \
-       --checkpoint outputs/bc_act/last --camera realsense --anchor commit --eef-mode off
-   (배관 점검: --dry-run --fake-snapshot --iterations 3)
-
-4. RL(SAC) 학습 — MuJoCo, IsaacLab 불필요, 아무 터미널에서나 실행 가능 (env_lerobot 에 mujoco/gymnasium 설치됨)
-   PYTHONPATH=. /home/dy/pac2026/env_lerobot/bin/python ai_layer/train_rl.py --num-steps 200000 \
-       --bc-checkpoint outputs/bc_act/last
+```
+PYTHONPATH=. python ai_layer/control_bridge/ai_node.py \
+    --checkpoint outputs/bc_act/last --camera realsense --anchor commit --eef-mode off
+(배관 점검: --dry-run --fake-snapshot --iterations 3)
 ```
 
 ## 검증 상태 (2026-09-21, LeRobot 0.4.4 / env_lerobot)
@@ -121,23 +128,27 @@ ai_layer/
 
 ## 자산
 
-- `../assets/pac_supermoon/` — 실로봇 URDF (PAC_Supermoon, D405 홀더, FK/IK 타깃 `tcp_link`)
-- `../assets/so101/` — 공식 SO-ARM100 저장소의 SO-101 URDF + 메시(참고) + **MJCF**(`so101_new_calib.xml`,
-  MuJoCo 물리 시뮬레이션용, 실측 서보 게인 반영됨). FK/IK 는 이 URDF 를 쓰지 않는다.
+- `../assets/pac_supermoon/` — 실로봇 URDF (PAC_Supermoon, D405 홀더, FK/IK 타깃 `tcp_link`). 관절공간
+  경로(`kinematics.py`, `so101_bc_dataset.py`)만 쓴다 — EE-native 경로는 이 URDF를 안 씀.
+- `../assets/so101/` — 공식 SO-ARM100 SO-101 URDF + 메시(참고, FK/IK는 안 씀) + 현재 실제로 쓰는
+  **MJCF**: `ee_rig.xml`(EE-only 리그, mocap+weld, 관절 없음), `scene_common.xml`(책상/바닥/벽
+  배경 + A4 용지 + 손목/오버뷰 카메라, 30개 `scene_a4*.xml`이 공유), `scene_a4*.xml`(형태×variant
+  30종, 텍스처 참조만 다름). `so101_new_calib.xml`(구 5관절 몸통 MJCF)은 더 이상 안 쓴다.
+- `../assets/so101/textures/gen_seam_textures.py` — 용접선 텍스처(.png) + ground-truth 경로(.json)를
+  같이 굽는다. `envs/seam_ground_truth.py`가 그 .json을 world 좌표로 읽어 RL reward에 쓴다.
 
 ## 알려진 제약 / TODO
 
-- `SO101BCDataset`은 `observation.state`/`action`이 `kinematics.JOINT_NAMES` 순서인지 메타로 검사하고
-  다르면 오류를 낸다 (REORDER_INDEX 보정은 아직 없음).
-- gripper 채널(7번째)은 녹화값(0~100)을 그대로 통과한다. 이 채널이 펌프 0/1인지 집게 값인지, 집게 값이면
-  실로봇(민제씨 캘리브)에 어떤 경로로 가는지는 **팀 회의에서 결정 예정**. 펌프 0/1 자리는 송지수 선배
-  ActionChunk의 `eef` 필드.
-- ActionChunk 직렬화/송신은 `control_bridge/` 에 있음 (2026-09-21). 남은 것: 실카메라(D405) 촬영시각-측정시각
-  오프셋 캘리브레이션, 실로봇 HAL(송지수·민제씨 쪽), world==base 좌표계 가정 확인.
-- seam CV 특징(5dim, `so101_bc_dataset.py::_seam_features`)은 depth 없이 2D 픽셀 기준 축약 벡터.
-  Wrist RGBD를 실제로 쓸 때는 `seam_cv.py::detect()`에 depth+intrinsics를 넘겨 3D 특징으로 확장할 것.
-- RL 환경의 목표 경로는 아직 절차적 직선 생성(ground truth)이며, 실제 카메라+seam_cv 인식을
-  루프에 넣는 건 후속 작업 (`envs/so101_seam_env.py` 모듈 docstring 참고). 카메라도 아직 미연결(placeholder)
-  — MuJoCo는 `mujoco.Renderer`로 오프스크린 렌더링이 가벼워서 이 작업은 IsaacLab보다 수월할 전망.
+- gripper 채널(7번째)은 EE-native 경로에서 이미 바이너리(0/1, 트리거 신호)로 고정됐다. 실로봇
+  집게/펌프 중 뭐가 될지는 실물 연결 시점에 결정.
+- ActionChunk 직렬화/송신은 `control_bridge/` 에 있음. 남은 것: 실카메라(D405) 촬영시각-측정시각
+  오프셋 캘리브레이션, 실로봇 HAL(송지수·민제씨 쪽), world==base 좌표계 가정 확인 — 전부 실물
+  연결 전제라 아직 미착수.
+- seam CV 특징(5dim)은 depth 없이 2D 픽셀 기준 축약 벡터. Wrist RGBD를 실제로 쓸 때는
+  `seam_cv.py::detect()`에 depth+intrinsics를 넘겨 3D 특징으로 확장할 것.
+- RL 환경(`so101_seam_env.py`) 관측의 손목 카메라는 아직 0 placeholder다(렌더링 비용 때문에
+  매 스텝 렌더 안 함) — 목표 경로 자체는 더 이상 절차적 직선이 아니라 `seam_ground_truth.py`로
+  실제 30종 텍스처 경로를 읽는다(2026-10-06 해결).
 - 지연보정 모듈은 이 폴더에 아직 없음 — 다음 작업 대상.
-- SO-101 leader로 실제 데이터 수집·BC 학습·RL fine-tuning 실행은 아직 미착수.
+- SO-101 leader(실물)로 실제 데이터 수집·BC 학습·RL fine-tuning 실행은 아직 미착수 — 지금까지
+  전부 MuJoCo 시뮬레이션 + 조이스틱/GUI로 검증됨.
