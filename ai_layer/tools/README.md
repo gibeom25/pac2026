@@ -204,8 +204,8 @@ clamp된다 — 관절 리치 제약이 없어진 대신 슬라이더/스틱을 
 버튼/뷰어/높이 제한)는 실제 수집과 동일하게 돈다 — `--repo-id` 없이 바로 실행 가능, 절차
 연습용. 씬 분포 카운트도 메모리에서만 세고 파일에 저장 안 함.
 
-**GUI 버전**: 터미널 대신 손목/오버뷰 카메라 화면 + 버튼 + 수집 현황 차트를 보고 싶으면
-`record_gui.py`(아래)를 쓸 것 — 물리/조이스틱/데이터셋/샘플링 로직은 완전히 동일하다.
+**GUI 버전**(`record_gui.py`, 아래)도 있지만 2026-10-06 기준 이 머신에서 간헐적인 GLX 크래시
+문제로 보류 중이다 — 지금은 이 터미널 버전을 기본으로 쓸 것.
 
 ## bench_inference.py — 추론 지연 벤치마크 (시연 PC 비교용)
 
@@ -216,7 +216,15 @@ PYTHONPATH=. python ai_layer/tools/bench_inference.py --checkpoint outputs/bc_ac
 seam/전처리/ACT forward/후처리/인코딩/끝-끝 p50·p95·max, 첫 추론 워밍업, 제어 max_age 300 ms 대비 여유를 찍는다.
 2026-09-23 A6000: 끝-끝 p50 9.3 / p95 14.6 ms. 다른 PC(5090 등)에서 같은 명령으로 재면 바로 비교된다.
 
-## record_gui.py — 데이터 수집 GUI (2026-10-06, 기범)
+## record_gui.py — 데이터 수집 GUI (2026-10-06, 기범) — ⚠️ 보류 중
+
+**이 머신에서 간헐적으로 `X Error of failed request: BadAccess ... X_GLXMakeCurrent`로 죽는다**
+— 같은 코드를 그대로 여러 번 돌려도 될 때도 있고 안 될 때도 있어서 재현 조건을 못 찾았다
+(순수 Dear PyGui만 단독으로는 멀쩡함, mujoco/torch 임포트나 실제 조이스틱 연결을 더해도 단독
+재현 안 됨 — record_gui.py 전체를 그대로 돌릴 때만 간헐적으로 발생). 코드/문서는 남겨두지만
+지금은 **`record_mujoco.py`(터미널)를 기본으로 쓸 것**. 다시 시도하고 싶으면 아래 그대로
+실행해보고, 또 같은 에러가 나면 NVIDIA Optimus GPU 선택 문제일 수 있어 `__NV_PRIME_RENDER_OFFLOAD=1
+__GLX_VENDOR_LIBRARY_NAME=nvidia` 를 앞에 붙여서 재시도해볼 것(아직 검증 안 됨).
 
 `record_mujoco.py`와 똑같은 물리/조이스틱/데이터셋/balanced 샘플링을 쓰되, MuJoCo 자유시점
 뷰어 대신 **손목 카메라(데이터셋에 실제 저장되는 화면) + 오버뷰 카메라(scene_common.xml의 고정

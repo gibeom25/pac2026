@@ -1,11 +1,15 @@
 # 학습 가이드 (데이터 수집 → BC → RL)
 
-2026-10-06 기준 현재 파이프라인(EE-only 리그 + 조이스틱/GUI + balanced 데이터 수집) 전체를
+2026-10-06 기준 현재 파이프라인(EE-only 리그 + 조이스틱 + balanced 데이터 수집) 전체를
 처음부터 끝까지 돌리는 실전 순서다. 각 단계는 이전 단계가 통과해야 다음으로 넘어가는 게 맞다 —
 중간에 건너뛰면 다음 단계에서 원인 찾기 어려운 에러가 난다.
 
 **최근 변경사항 요약** (이 문서가 안 맞는 것 같으면 먼저 여기부터 확인):
-- 데이터 수집 GUI(`record_gui.py`) 추가 — 손목/오버뷰 카메라 화면 + 버튼 + 수집 현황 차트.
+- ⚠️ 데이터 수집 GUI(`tools/record_gui.py`)를 시도했는데 이 머신에서 간헐적으로 `X Error ...
+  BadAccess ... X_GLXMakeCurrent`로 죽는 문제가 있어 **보류**했다 — 재현 조건을 못 찾았고(같은
+  코드를 그대로 여러 번 돌려도 될 때도 안 될 때도 있음), 코드는 남겨뒀지만 지금은 **터미널
+  (`record_mujoco.py`)을 기본으로 쓸 것**. GUI를 다시 시도하고 싶으면 tools/README.md의
+  record_gui.py 절 참고.
 - 녹화 중 바닥 접촉은 더 이상 에피소드를 폐기하지 않는다 — 도구 끝이 1cm 밑으로 안 내려가게
   막는 걸로 바뀜(1단계 참고). **RL 쪽은 그대로 접촉=즉시 종료+패널티**(5단계 참고) — 데이터
   수집과 RL 환경의 규약이 이제 서로 다르다는 점에 주의.
@@ -34,20 +38,21 @@ pip install "cmeel-urdfdom>=4,<5" "cmeel-tinyxml2>=10,<11"
 pip install "scipy>=1.11" "scikit-image>=0.22"
 # RL 환경(MuJoCo) + 조이스틱 입력(joystick_input.py)
 pip install "mujoco>=3.1" "gymnasium>=0.29" evdev
-# 데이터 수집 GUI(record_gui.py) — 카메라 화면/버튼/수집 현황 차트
-pip install dearpygui
 ```
 
 실제 이 머신에 검증돼 있는 조합(`pip list` 기준, 2026-10): Python 3.10.21, lerobot 0.4.4, placo
 0.9.25, pin 3.8.0, cmeel-urdfdom 4.0.1, cmeel-tinyxml2 10.0.0, torch 2.10.0+cu128(CUDA 자동 설치됨,
 별도 index-url 불필요 — `pip install torch`만으로 GPU 빌드가 잡힌다), mujoco 3.13.0, gymnasium 1.3.0,
-scipy 1.15.3, scikit-image 0.25.2, evdev 1.9.3, dearpygui 2.3.1. GPU는 RTX 4060 Laptop(8GB) 기준.
+scipy 1.15.3, scikit-image 0.25.2, evdev 1.9.3. GPU는 RTX 4060 Laptop(8GB) 기준.
 
 설치 후 확인:
 ```bash
-python -c "import lerobot, mujoco, gymnasium, evdev, cv2, skimage, dearpygui; print('OK')"
+python -c "import lerobot, mujoco, gymnasium, evdev, cv2, skimage; print('OK')"
 nvidia-smi   # GPU 인식 확인 (torch.cuda.is_available()도 True여야 함)
 ```
+
+(`dearpygui`는 `record_gui.py`용인데 지금 보류 상태라 기본 설치에서 뺐다 — 다시 시도하려면
+`pip install dearpygui`, tools/README.md의 record_gui.py 절 참고.)
 
 조이스틱(Logitech Extreme 3D Pro)을 쓸 거면 USB로 연결 후 `/dev/input/eventN`이 잡히는지(`ls
 /dev/input/ | grep event`) 확인 — 권한 문제로 evdev가 장치를 못 열면(Permission denied) 사용자를
@@ -94,22 +99,10 @@ source ~/anaconda3/etc/profile.d/conda.sh && conda activate pac2026
   `joystick_input.py`의 `ee_velocity()`/`rotation_rate()` 호출부 `--invert-*` 플래그로 고친다.
 - Logitech Extreme 3D Pro가 안 잡히면 `joystick_input.py`를 단독 실행해서 눌린 버튼 이름이
   출력되는지 확인 (버튼 매핑 디버그용).
-- 손목/오버뷰 카메라가 실제로 어떻게 보이는지(check_ee.py는 자유시점 디버그 화면이라 카메라
-  화면 자체는 안 보여줌) 먼저 보고 싶으면 `record_gui.py --dry-run --num-episodes 1`로 저장 없이
-  GUI만 띄워볼 수 있다(1단계 참고).
 
-## 1단계 — 데이터 수집
-
-GUI(`tools/record_gui.py`, 추천)와 터미널(`tools/record_mujoco.py`) 둘 다 똑같은 물리/조이스틱/
-데이터셋/balanced 샘플링을 쓴다 — GUI는 손목/오버뷰 카메라 화면과 수집 현황 차트를 보여주고
-화면 버튼으로도 조작 가능, 터미널은 더 가볍다(의존성 적음). 아무거나 골라도 됨.
+## 1단계 — 데이터 수집 (`tools/record_mujoco.py`)
 
 ```bash
-# GUI (권장) — 카메라 화면 + 버튼 + (형태,variant)별 수집 현황 차트
-PYTHONPATH=. python ai_layer/tools/record_gui.py \
-    --repo-id <본인id>/so101-weld-demo --num-episodes 30
-
-# 또는 터미널
 PYTHONPATH=. python ai_layer/tools/record_mujoco.py \
     --repo-id <본인id>/so101-weld-demo --num-episodes 30
 ```
@@ -123,12 +116,11 @@ PYTHONPATH=. python ai_layer/tools/record_mujoco.py \
   "오늘은 curve만 모아야지" 식으로 신경 쓸 필요 없이 그냥 계속 돌리면 된다.
   - 특정 형태만 집중적으로 모으고 싶으면 `--scene dashed` 처럼 이름을 직접 주면 그 형태 안에서만
     (variant로) 균형 샘플링한다.
-- 조작: 트리거를 누르고 있는 동안 비드가 찍힌다. **BTN_THUMB**(GUI는 Save && End 버튼)로 그
-  자리에서 저장+종료(에피소드 길이는 기본 무제한), **BTN_THUMB2**(GUI는 Discard && Retry
-  버튼)로 폐기+재시도. 도구 끝이 일정 높이(1cm, "비트 부러짐 방지") 밑으로는 안 내려가게 막혀
-  있다 — 바닥에 닿아도 더 이상 에피소드가 폐기되지 않는다(2026-10-06 변경).
-- (터미널) 에피소드 사이 Enter로 다음 녹화 시작 / (GUI) Start Episode 버튼. Ctrl+C(터미널) 또는
-  창 닫기(GUI)로 중단해도 그때까지 저장된 에피소드는 유지된다.
+- 조작: 트리거를 누르고 있는 동안 비드가 찍힌다. **BTN_THUMB**로 그 자리에서 저장+종료(에피소드
+  길이는 기본 무제한), **BTN_THUMB2**로 폐기+재시도. 도구 끝이 일정 높이(1cm, "비트 부러짐
+  방지") 밑으로는 안 내려가게 막혀 있다 — 바닥에 닿아도 더 이상 에피소드가 폐기되지 않는다
+  (2026-10-06 변경).
+- 에피소드 사이 Enter로 다음 녹화 시작. Ctrl+C로 중단해도 그때까지 저장된 에피소드는 유지된다.
 
 ## 2단계 — 데이터 점검 (`tools/check_dataset.py`)
 
@@ -206,9 +198,8 @@ PYTHONPATH=. python ai_layer/train_rl.py \
 conda activate pac2026
 cd ~/pac2026
 
-# 1. 수집 (balanced 샘플링, 30개 모으면 6형태 고르게 들어감) — GUI 추천
-PYTHONPATH=. python ai_layer/tools/record_gui.py --repo-id me/so101-weld-demo --num-episodes 30
-# 또는 터미널만: record_mujoco.py --repo-id me/so101-weld-demo --num-episodes 30
+# 1. 수집 (balanced 샘플링, 30개 모으면 6형태 고르게 들어감)
+PYTHONPATH=. python ai_layer/tools/record_mujoco.py --repo-id me/so101-weld-demo --num-episodes 30
 
 # 2. 점검 (❌ 없을 때까지)
 PYTHONPATH=. python ai_layer/tools/check_dataset.py --repo-id me/so101-weld-demo --root datasets/me/so101-weld-demo
@@ -228,8 +219,8 @@ PYTHONPATH=. python ai_layer/train_rl.py --num-steps 200000 --bc-checkpoint outp
 | 증상 | 확인할 것 |
 |---|---|
 | `conda activate pac2026`가 안 됨 | "0-1. 환경 활성화"의 방법 A/B/C 참고 (이 머신은 conda 설치본이 두 개라 이름 등록이 필요) |
-| 뷰어/GUI 창이 안 뜸 | `--headless`를 실수로 안 줬는지(기본은 뜸), GPU/디스플레이 환경(`DISPLAY`). 창이 뜨기 전에 터미널에서 멈춘 것처럼 보이면 조이스틱 보정(처음 1회) 또는 데이터셋 덮어쓰기 확인 프롬프트 — 터미널을 보면 질문이 떠 있을 것(창은 그 전에 이미 떠 있어야 함) |
-| `record_gui.py` 실행하니 `ModuleNotFoundError: dearpygui` | `pip install dearpygui` (0단계 참고) |
+| 뷰어 창이 안 뜸 | `--headless`를 실수로 안 줬는지(기본은 뜸), GPU/디스플레이 환경(`DISPLAY`). 창이 뜨기 전에 터미널에서 멈춘 것처럼 보이면 조이스틱 보정(처음 1회) 또는 데이터셋 덮어쓰기 확인 프롬프트 — 터미널을 보면 질문이 떠 있을 것(창은 그 전에 이미 떠 있어야 함) |
+| `record_gui.py`가 `X Error ... BadAccess ... X_GLXMakeCurrent`로 죽음 | 알려진 간헐적 문제, 보류 중(맨 위 요약 참고) — `record_mujoco.py`(터미널)를 쓸 것 |
 | 조이스틱 방향이 반대 | `joystick_input.py` 단독 실행으로 버튼/축 이름 확인 후 `--invert-x/y/z/roll/pitch` |
 | z축(스로틀)이 한쪽 방향으로만 움직임 | 영점 보정이 끝 쪽에 잡혔을 가능성 — `--recalibrate-joystick`로 다시 잡을 것(0단계 참고) |
 | `check_dataset.py`에서 선 인식 실패율 높음 | `tools/seam_preview.py`로 `SeamCVConfig` 재조정 |

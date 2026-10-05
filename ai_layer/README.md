@@ -67,11 +67,12 @@ ai_layer/
 ## 엔드투엔드 흐름
 
 **현재(2026-10-06) 실제 쓰는 흐름은 데이터 수집부터 RL까지 전부 시뮬레이션(MuJoCo) +
-조이스틱/GUI다** — 실물 SO-101 leader로 티칭하는 아래 1단계는 아직 미착수 상태 그대로다.
+조이스틱이다** — 실물 SO-101 leader로 티칭하는 아래 1단계는 아직 미착수 상태 그대로다.
 전체 단계별 실행 명령/옵션은 [`TRAINING_GUIDE.md`](TRAINING_GUIDE.md)에 있다 — 요약만 적으면:
 
 ```
-0. 환경 설치/활성화, 1. 데이터 수집(record_gui.py 또는 record_mujoco.py, 조이스틱),
+0. 환경 설치/활성화, 1. 데이터 수집(record_mujoco.py, 조이스틱 — GUI(record_gui.py)도 있지만
+   이 머신에서 간헐적 GLX 크래시로 보류 중, TRAINING_GUIDE.md 참고),
 2. 데이터 점검(check_dataset.py), 3. BC 학습(train_bc.py), 4. RL 환경 스모크(rl_env_smoke.py),
 5. RL 학습(train_rl.py, BC 체크포인트를 참고 teacher로 선택 사용) — 전부 TRAINING_GUIDE.md 참고.
 ```
