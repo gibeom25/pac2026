@@ -27,23 +27,36 @@
     <light pos="0 0 3.5" dir="0 0 -1" directional="true" />
 
     <!-- 전체(오버뷰) 카메라 — ee_body에 안 붙은 고정 카메라, 책상 전체를 비스듬히 내려다본다.
-         실물로 치면 "작업대를 바라보는 고정 삼각대 카메라" 역할(GUI 쪽 TRAINING 녹화 화면에서
-         손목 카메라와 나란히 띄움). 각도는 근사값 — 실제로 띄워보고 조정 필요. -->
+         실물로 치면 "작업대를 바라보는 고정 삼각대 카메라" 역할. 각도는 근사값. -->
     <camera name="overview" pos="0.25 -0.55 0.5" euler="48 0 0" fovy="55"/>
 
-    <!-- 책상 윗면 — 실제 충돌면(이름/충돌 채널은 기존 floor 그대로, 재질+크기만 변경). 기존엔
-         무한 평면(size 0 0)이라 오버뷰 카메라에서 바닥/벽이 전혀 안 보였다 — 작업공간
-         (x 0.05~0.45, y -0.20~0.20)을 넉넉히 덮으면서 가장자리가 보이게 유한 크기(1.2m x 0.8m)로
-         바꿨다. 유한 평면도 충돌 판정은 그 범위 안에서 기존과 동일하게 동작한다. -->
+    <!-- 책상 윗면 — 실제 충돌면(이름/충돌 채널/크기 전부 그대로, record_mujoco.py FLOOR_GEOM_NAME,
+         so101_seam_env.py가 이 이름으로 찾음). 작업공간(x 0.05~0.45, y -0.20~0.20)을 넉넉히 덮는
+         유한 크기(1.2m x 0.8m). -->
     <geom name="floor" size="0.6 0.4 0.05" pos="0 0 0" type="plane" material="desk" contype="1" conaffinity="3" />
 
-    <!-- 방 바닥(배경용, 충돌 없음) — 책상 아래로 책상 높이만큼(근사 0.75m) 내려서 배치. -->
+    <!-- 2026-10-06(2차, 기범 지적 — "책상 모르냐?"): 위 floor 평면만으로는 두께 없는 종이짝처럼
+         보여서, 순수 시각용(충돌 없음) 책상 몸체+다리 박스를 밑에 덧붙였다. floor 평면은 절대
+         안 건드림(충돌/접촉 로직이 의존) — 이 박스는 그 바로 아래 보이기만 하는 장식. -->
+    <geom name="desk_body" type="box" size="0.6 0.4 0.014" pos="0 0 -0.016" material="desk"
+        contype="0" conaffinity="0" />
+    <geom name="desk_leg_fl" type="box" size="0.02 0.02 0.36" pos="0.55 0.35 -0.39" material="desk" contype="0" conaffinity="0" />
+    <geom name="desk_leg_fr" type="box" size="0.02 0.02 0.36" pos="0.55 -0.35 -0.39" material="desk" contype="0" conaffinity="0" />
+    <geom name="desk_leg_bl" type="box" size="0.02 0.02 0.36" pos="-0.55 0.35 -0.39" material="desk" contype="0" conaffinity="0" />
+    <geom name="desk_leg_br" type="box" size="0.02 0.02 0.36" pos="-0.55 -0.35 -0.39" material="desk" contype="0" conaffinity="0" />
+
+    <!-- 방 바닥(배경용, 충돌 없음) — 책상 다리가 닿는 높이(-0.75)에 배치. -->
     <geom name="room_floor" size="3 3 0.05" pos="0 0 -0.75" type="plane" material="room_floor"
         contype="0" conaffinity="0" />
 
-    <!-- 뒷벽(배경용, 충돌 없음) — 책상 뒤(+y)에 수직으로. -->
-    <geom name="wall_back" size="3 1.5 0.05" pos="0 1.0 0.75" euler="90 0 0" material="wall"
-        contype="0" conaffinity="0" />
+    <!-- 뒷벽 + 옆벽(배경용, 충돌 없음) — "방 구석" 느낌이 나게 두 면. 2026-10-06(2차): 원래
+         <geom type="plane">가 빠진 채 올라가 있었다 — type 기본값이 plane이 아니라 sphere라서
+         카메라가 그 구 안에 들어가 있는 꼴이 돼 뒷면 컬링으로 안 보였다(화면엔 그냥 하늘색만
+         보였음, 기범이 스크린샷으로 지적). type="plane"을 빠뜨리지 않는 게 핵심. -->
+    <geom name="wall_back" type="plane" size="1.325 1.2 0.05" pos="0.675 0.42 0.6" euler="90 0 0"
+        material="wall" contype="0" conaffinity="0" />
+    <geom name="wall_side" type="plane" size="1.2 2 0.05" pos="-0.65 0 0.6" euler="0 90 0"
+        material="wall" contype="0" conaffinity="0" />
 
     <!-- A4 용지: 긴 축(297mm)을 world x(로봇 전방)에 맞춰 배치. 경로 영역(x 0.15~0.35)이 용지
          안쪽(x 0.10~0.40)에 들어오도록 중심을 x=0.25에 둠. 재질(a4_weld_seam)은 각 scene_a4*.xml이
