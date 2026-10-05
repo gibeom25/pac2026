@@ -415,6 +415,17 @@ def _run_one_episode(args: argparse.Namespace, ctl: JoystickEEController, model,
     rod_gid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, ROD_GEOM_NAME)
     floor_gid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, FLOOR_GEOM_NAME)
 
+    if viewer is not None:
+        # 2026-10-06(기범): 녹화 시작 시 뷰어가 wrist 카메라 시점에 맞춰서 시작하게 — 데이터셋에
+        # 실제로 저장되는 화면(= wrist 카메라)을 바로 보면서 조작할 수 있다. FIXED로 두면 그
+        # 카메라에 고정돼 자유 궤도 조작은 안 되지만(mujoco.viewer가 Tab으로 다른 카메라/자유
+        # 시점으로 전환 가능), 어차피 "실제로 찍히는 화면"을 보는 게 목적이라 자유 시점보다
+        # 유용하다. 이전엔 자유 카메라를 도구 끝에 lookat만 맞추고 azimuth/거리는 그때그때
+        # 기본값이라 매번 수동으로 돌려야 했다.
+        wrist_cam_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, CAMERA_NAME)
+        viewer.cam.type = mujoco.mjtCamera.mjCAMERA_FIXED
+        viewer.cam.fixedcamid = wrist_cam_id
+
     mujoco.mj_resetData(model, data)
     target_pos = MOCAP_HOME.copy()
     R_cmd = np.eye(3)
@@ -474,7 +485,6 @@ def _run_one_episode(args: argparse.Namespace, ctl: JoystickEEController, model,
             b.step(dt)
 
         if viewer is not None:
-            viewer.cam.lookat[:] = tip  # 뷰어 시점이 도구 끝을 계속 따라가게(azimuth/거리는 마우스로 자유 조작 가능)
             viewer.user_scn.ngeom = 0
             _draw_bead_trail(viewer.user_scn, bead_points)
             viewer.sync()
