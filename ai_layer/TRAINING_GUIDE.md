@@ -150,6 +150,10 @@ PYTHONPATH=. python ai_layer/train_bc.py \
 - 액션 중 yaw(회전 z축, drz)는 학습 타깃에서 0으로 마스킹된다 — 실로봇 IK가 5D(XYZ+roll/pitch)만
   풀어서 yaw는 애초에 반영이 안 되기 때문(roll/pitch는 실제로 쓰이는 자유도라 그대로 학습함).
   녹화 원본에는 yaw도 그대로 남아 있다.
+- `--xyz-only`를 주면 roll/pitch까지 마저 0으로 마스킹해서 4DOF(xyz+그리퍼)짜리 가벼운 MVP를
+  먼저 학습할 수 있다 — 녹화 데이터는 전혀 안 바뀌므로(마스킹은 학습 때만) 나중에 이 플래그
+  없이 다시 돌리면 회전 포함 버전도 재녹화 없이 바로 학습 가능. 체크포인트의
+  `train_info.json`에 `xyz_only` 값이 기록된다.
 - 먼저 `--epochs 20~30 --batch-size 8` 정도로 짧게 돌려서 loss가 내려가는지(과적합 시험) 확인한
   다음 본 학습으로 늘리는 걸 추천.
 - 결과: `outputs/bc_act/last/`(config.json, model.safetensors, preprocessor/postprocessor —
