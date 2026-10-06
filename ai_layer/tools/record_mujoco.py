@@ -81,7 +81,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from ai_layer.kinematics import pose_delta, pose_to_state, pose_to_xyzrotvec  # noqa: E402
 from ai_layer.tools.joystick_input import JoystickEEController  # noqa: E402
 from ai_layer.tools.keyboard_input import KeyboardEEController  # noqa: E402
-from ai_layer.tools.teleop_input import add_input_arg, build_ee_controller  # noqa: E402
+from ai_layer.tools.teleop_input import add_input_arg, resolve_input_mode  # noqa: E402
 
 from lerobot.datasets.lerobot_dataset import LeRobotDataset  # noqa: E402
 from lerobot.datasets.utils import build_dataset_frame, hw_to_dataset_features  # noqa: E402
@@ -551,6 +551,17 @@ def _run_one_episode(args: argparse.Namespace, ctl: JoystickEEController | Keybo
     return True
 
 
+def _wait_ready(ctl: JoystickEEController | KeyboardEEController, prompt: str) -> None:
+    """"준비되면 Enter" 대기. 키보드 모드는 builtin input()을 못 쓴다 — ctl이 생성되는 순간부터
+    백그라운드 스레드가 같은 stdin fd를 raw 모드로 읽고 있어서 둘이 경쟁한다(keyboard_input.py의
+    wait_for_enter 참고). 조이스틱 모드는 stdin을 안 건드리므로 그냥 builtin input()을 쓴다."""
+    wait_for_enter = getattr(ctl, "wait_for_enter", None)
+    if wait_for_enter is not None:
+        wait_for_enter(prompt)
+    else:
+        input(prompt)
+
+
 def _run(args: argparse.Namespace, ctl: JoystickEEController | KeyboardEEController, dataset, sampler: BalancedSceneSampler) -> None:
     """에피소드마다 BalancedSceneSampler로 (씬, variant)를 고르고, 그 씬을 새로 로드해 기록한다.
 
@@ -576,7 +587,7 @@ def _run(args: argparse.Namespace, ctl: JoystickEEController | KeyboardEEControl
         prompt = f"\n[record] 에피소드 {saved_count + 1}/{args.num_episodes} — {tag} — 준비되면 Enter (Ctrl+C 종료) "
 
         if args.headless:
-            input(prompt)
+            _wait_ready(ctl, prompt)
             saved = _run_one_episode(args, ctl, model, data, renderer, dataset, viewer=None)
         else:
             # 창을 Enter 입력 "전에" 띄운다 — 전에는 input() 뒤에 열어서, Enter 누르기 전까지는
@@ -584,7 +595,7 @@ def _run(args: argparse.Namespace, ctl: JoystickEEController | KeyboardEEControl
             # 띄우고 홈 자세를 한 번 그린 다음 기다려야, 기다리는 동안에도 계속 떠 있는 게 보인다.
             with mujoco.viewer.launch_passive(model, data) as viewer:
                 viewer.sync()
-                input(prompt)
+                _wait_ready(ctl, prompt)
                 saved = _run_one_episode(args, ctl, model, data, renderer, dataset, viewer)
 
         if renderer is not None:
@@ -597,8 +608,32 @@ def _run(args: argparse.Namespace, ctl: JoystickEEController | KeyboardEEControl
 def main() -> None:
     args = parse_args()
 
-    if args.headless:
-        ctl = build_ee_controller(args.input, recalibrate=args.recalibrate_joystick, grab_keyboard=args.grab_keyboard)
+    resolved_input = resolve_input_mode(args.input)
+
+    # 데이터셋 준비(덮어쓰기/이어쓰기/취소 확인 input())를 키보드 컨트롤러 생성보다 먼저 한다.
+    # KeyboardEEController는 생성되는 순간부터 백그라운드 스레드로 stdin을 raw 모드로 읽기
+    # 시작하는데, 그 상태에서 builtin input()을 또 부르면 같은 바이트를 두고 경쟁해서(한 줄짜리
+    # 응답인 "overwrite"/"resume"/"cancel"이 raw 모드 때문에 더더욱 깨지기 쉬움) 입력이 한쪽만
+    # 받거나 영영 안 끝나는 행이 생긴다. 이 순서를 지키면 그 시점엔 아직 raw 모드가 아니라서
+    # input()이 평소처럼 정상 동작한다.
+    if args.dry_run:
+        print("[record] --dry-run: 저장은 전부 건너뛴다 (조작/씬 전환/버튼/뷰어는 실제 수집과 동일).")
+        dataset = None
+        combos = _build_combos(args.scene, args.variant)
+        sampler = BalancedSceneSampler(combos, counts_path=None)  # 세션 안에서만 균형, 영구 저장 안 함
+    else:
+        dataset = build_dataset(args)
+        combos = _build_combos(args.scene, args.variant)
+        counts_path = Path(dataset.root) / "meta" / "scene_balance.json"
+        sampler = BalancedSceneSampler(combos, counts_path)
+
+    if resolved_input == "keyboard":
+        # KeyboardEEController()는 생성이 바로 끝난다(블로킹 프롬프트 없음, 터미널 raw 모드만
+        # 설정) — 조이스틱처럼 "창부터 띄우고 그 안에서 기다리는" 춤이 필요 없다. 뷰어 창과
+        # 무관하게 동작하므로 --headless와도 그냥 같이 쓸 수 있다.
+        ctl = KeyboardEEController()
+    elif args.headless:
+        ctl = JoystickEEController(recalibrate=args.recalibrate_joystick)
     else:
         # 뷰어를 조이스틱 연결/보정보다 먼저 띄운다 — 2026-10-06: 저장된 스로틀 보정값이 없으면
         # JoystickEEController() 생성자 안에서 터미널 input()으로 멈추는데, 그 시점엔 아직 MuJoCo
@@ -612,18 +647,7 @@ def main() -> None:
         mujoco.mj_forward(boot_model, boot_data)
         with mujoco.viewer.launch_passive(boot_model, boot_data) as boot_viewer:
             boot_viewer.sync()
-            ctl = build_ee_controller(args.input, recalibrate=args.recalibrate_joystick, grab_keyboard=args.grab_keyboard)
-
-    if args.dry_run:
-        print("[record] --dry-run: 저장은 전부 건너뛴다 (조작/씬 전환/버튼/뷰어는 실제 수집과 동일).")
-        dataset = None
-        combos = _build_combos(args.scene, args.variant)
-        sampler = BalancedSceneSampler(combos, counts_path=None)  # 세션 안에서만 균형, 영구 저장 안 함
-    else:
-        dataset = build_dataset(args)
-        combos = _build_combos(args.scene, args.variant)
-        counts_path = Path(dataset.root) / "meta" / "scene_balance.json"
-        sampler = BalancedSceneSampler(combos, counts_path)
+            ctl = JoystickEEController(recalibrate=args.recalibrate_joystick)
 
     try:
         _run(args, ctl, dataset, sampler)

@@ -125,16 +125,46 @@ PYTHONPATH=. python ai_layer/tools/joystick_input.py [--list]
 단독 실행하면 라이브 진단 모드(축/버튼 값 + 눌린 버튼 이름 실시간 출력, `--list`는 연결된
 입력 장치 목록만 출력) — 어느 물리 버튼이 어떤 코드인지 헷갈리면 이걸로 직접 눌러서 확인할 것.
 
-### keyboard_input.py / teleop_input.py — 조이스틱 없을 때 키보드로 대체 (2026-10-06)
+### keyboard_input.py / teleop_input.py — 조이스틱 없을 때 키보드로 대체 (2026-10-06, 4차 설계)
 
 `KeyboardEEController`가 `JoystickEEController`와 **똑같은 공개 인터페이스**(poll/ee_velocity/
 gripper_bit/rotation_rate/episode_end_requested/discard_requested/close)를 구현해서 드롭인으로
-바꿔 끼울 수 있다. `teleop_input.build_ee_controller(input_mode, recalibrate)`가 실제 선택을
-담당하고 `record_mujoco.py`/`check_ee.py`/`record_gui.py` 전부 이걸 쓴다 — 셋 다 공통으로
-`--input {auto,joystick,keyboard}`를 받는다(기본 `auto`: 조이스틱을 찾아보고 없으면 키보드로
-자동 전환, 전환되면 콘솔에 안내 메시지 출력).
+바꿔 끼울 수 있다. `record_mujoco.py`/`check_ee.py`/`record_gui.py` 전부 공통으로 `--input
+{auto,joystick,keyboard}`를 받는다(기본 `auto`: 조이스틱을 찾아보고 없으면 키보드로 자동
+전환, 전환되면 콘솔에 안내 메시지 출력).
 
-키 배치(조이스틱의 "누르는 동안 레이트" 관례 그대로 — 아날로그가 없어서 전부 on/off):
+**설계가 세 번 바뀌었다(기범 지적, 2026-10-06):**
+1. evdev로 `/dev/input/eventN`을 직접 읽기 → `input` 그룹 권한이 새로 필요해짐("기존
+   ENTER 키 입력은 이런 거 없었잖아" — 터미널 `input()`은 포커스된 터미널에만 가는 일반 OS
+   입력 경로를 쓰는데, evdev는 그 경로를 건너뛰고 커널 장치를 통째로 읽어서 별도 권한이
+   필요한 완전히 다른 메커니즘이었다).
+2. evdev + grab + ESC 비상탈출 → 노트북처럼 `/dev/input/eventN`이 여러 개인 환경에서
+   "KEY_A 있는 첫 장치" 탐색이 엉뚱한 장치를 잡을 수 있어 grab해도 ESC조차 안 먹힐 수 있었다.
+3. MuJoCo 뷰어의 GLFW `key_callback` → 권한/엉뚱한 장치 문제는 해결됐지만, 뷰어 창에 매번
+   포커스를 클릭해줘야 하고 `--headless`와는 아예 못 쓰게 됐다 — 불필요하게 복잡했다.
+4. **(지금) 터미널 raw 모드로 이 프로세스의 stdin을 직접 읽는다** — `teleop_twist_keyboard`
+   같은 표준 CLI teleop 도구들과 같은 방식("기존 teleop 프로그램들처럼 터미널에서 받으면
+   되는거 아니야?"가 정답이었다). 이 프로세스 본인의 tty를 만지는 것뿐이라 별도 권한이
+   전혀 필요 없고(커널 전역 장치를 읽는 evdev와 다름), 장치 탐색 자체가 없어 엉뚱한 장치를
+   잡을 위험도 없고, 뷰어 창과 무관해서 `--headless`와도 그냥 같이 쓸 수 있다. 조작 중엔
+   **이 명령을 실행한 터미널**에 포커스가 있으면 된다.
+
+터미널은 ICANON(줄 단위 입력 대기)/ECHO(타이핑한 글자가 화면에 찍히는 것)만 끄고 **ISIG는
+그대로 둬서 Ctrl+C는 평소처럼 작동한다**. release 통지가 없는 건 GLFW 콜백과 같은 제약이라
+똑같은 방식으로 해결한다 — 문자가 들어온 시각을 기록해두고 0.6초 안에 또 안 들어오면 "뗐다"고
+보는 식으로 "누르고 있음"을 흉내낸다(OS 키 반복 간격보다 넉넉하게). 종료 시 터미널 설정을
+반드시 원래대로 복원하고(안 하면 터미널이 에코/줄바꿈 안 되는 상태로 남음), 혹시 복원을 못
+부르고 죽는 경우를 대비해 atexit에도 복원을 걸어둔다.
+
+**주의**: `record_mujoco.py`의 "준비되면 Enter" 대기(에피소드 사이)에는 builtin `input()`을
+못 쓴다 — 키보드 컨트롤러가 생성되는 순간부터 백그라운드 스레드가 같은 stdin을 raw 모드로
+읽고 있어서 둘이 경쟁한다. 대신 같은 ENTER 감지 메커니즘을 재사용하는 `ctl.wait_for_enter()`를
+쓴다. 같은 이유로 **데이터셋 덮어쓰기/이어쓰기 확인 프롬프트는 키보드 컨트롤러 생성보다 먼저
+실행되도록 순서를 맞춰뒀다** — 그 프롬프트가 라인 전체를 입력받아야 해서(raw 모드/스레드
+경쟁과 특히 안 맞음) 순서가 중요하다.
+
+키 배치(조이스틱의 "누르는 동안 레이트" 관례 그대로 — 아날로그가 없어서 전부 on/off,
+대소문자 구분 안 함):
 
 | 기능 | 키 |
 |---|---|
@@ -146,23 +176,17 @@ gripper_bit/rotation_rate/episode_end_requested/discard_requested/close)를 구�
 | yaw -/+ | C / V |
 | 그리퍼/도구 신호(누르는 동안) | SPACE |
 | 에피소드 저장+종료 (BTN_THUMB) | ENTER |
-| 에피소드 폐기+재시도 (BTN_THUMB2) | BACKSPACE |
+| 에피소드 폐기+재시도 (BTN_THUMB2) | BACKSPACE/DEL |
 
 ```bash
-PYTHONPATH=. python ai_layer/tools/keyboard_input.py [--list] [--grab]   # 단독 진단 모드
-PYTHONPATH=. python ai_layer/tools/record_mujoco.py --input keyboard --grab-keyboard --dry-run --num-episodes 1
+PYTHONPATH=. python ai_layer/tools/keyboard_input.py            # 단독 진단 모드(뷰어 없이 터미널에서 바로)
+PYTHONPATH=. python ai_layer/tools/record_mujoco.py --input keyboard --headless --dry-run --num-episodes 1
 ```
 
-joystick_input.py와 같은 evdev 기반이라 키보드도 보통 `input` 그룹 권한이 필요하다(0단계 참고).
-`--recalibrate-joystick`은 키보드 입력일 때는 그냥 무시된다(스로틀 자체가 없으므로).
-
-**노트북 키보드처럼 조종용을 따로 못 둘 때(2026-10-06 지적)**: grab 안 하면 WASD/ENTER 같은
-입력이 evdev 레벨에서 지금 포커스된 다른 창(터미널 등)에도 그대로 들어간다 — ENTER가 터미널에
-반쯤 쳐둔 명령을 실행시켜버릴 수 있어 위험하다. `--grab-keyboard`를 주면 그 키보드를 커널
-레벨로 독점해서(`dev.grab()`) 다른 창엔 전혀 안 들어가게 막는다 — 기본값은 **off**(안전
-우선, 그냥 두면 조종 중 다른 창을 건드리지 않게만 주의). 독점 중 먹통되면 **ESC**를 누르면
-즉시 grab을 풀고 빠져나온다(`KeyboardGrabReleased`) — 같은 물리 키보드가 완전히 독점되면
-Ctrl+C조차 터미널에 안 먹힐 수 있어서 넣어둔 비상 탈출.
+`--recalibrate-joystick`은 키보드 입력일 때는 그냥 무시된다(스로틀 자체가 없으므로). 별도
+권한/그룹 설정이 전혀 필요 없다 — joystick_input.py의 evdev 권한 안내(0단계)는 조이스틱
+전용이고 키보드 쪽엔 적용 안 됨. 실제 tty가 아닌 곳(파이프/리다이렉트로 stdin을 바꾼 경우)에서
+`--input keyboard`를 쓰면 생성 시점에 바로 에러를 낸다.
 
 ## record_mujoco.py — 조이스틱 -> MuJoCo EE 리그 미러링 데이터 수집 (2026-09-22, 기범 / 2026-09-23 조이스틱 전환)
 
@@ -243,8 +267,10 @@ clamp된다 — 관절 리치 제약이 없어진 대신 슬라이더/스틱을 
 버튼/뷰어/높이 제한)는 실제 수집과 동일하게 돈다 — `--repo-id` 없이 바로 실행 가능, 절차
 연습용. 씬 분포 카운트도 메모리에서만 세고 파일에 저장 안 함.
 
-**GUI 버전**(`record_gui.py`, 아래)도 있지만 2026-10-06 기준 이 머신에서 간헐적인 GLX 크래시
-문제로 보류 중이다 — 지금은 이 터미널 버전을 기본으로 쓸 것.
+**GUI 버전은 이제 PyQt6 쪽을 쓸 것**(`ai_layer/gui/app.py` — 카메라 뷰 + 로봇 상태 + 수집
+현황 + 학습 탭까지 한 화면, 자세한 건 `ai_layer/gui/README.md`). 아래 `record_gui.py`(Dear
+PyGui)는 간헐적 GLX 크래시 문제로 보류 중이라 더 권장하지 않는다 — 이 터미널 버전이나 PyQt
+GUI를 쓸 것.
 
 ## bench_inference.py — 추론 지연 벤치마크 (시연 PC 비교용)
 
@@ -255,7 +281,7 @@ PYTHONPATH=. python ai_layer/tools/bench_inference.py --checkpoint outputs/bc_ac
 seam/전처리/ACT forward/후처리/인코딩/끝-끝 p50·p95·max, 첫 추론 워밍업, 제어 max_age 300 ms 대비 여유를 찍는다.
 2026-09-23 A6000: 끝-끝 p50 9.3 / p95 14.6 ms. 다른 PC(5090 등)에서 같은 명령으로 재면 바로 비교된다.
 
-## record_gui.py — 데이터 수집 GUI (2026-10-06, 기범) — ⚠️ 보류 중
+## record_gui.py — 데이터 수집 GUI, Dear PyGui (2026-10-06, 기범) — ⚠️ 보류 중, PyQt 버전 권장
 
 **이 머신에서 간헐적으로 `X Error of failed request: BadAccess ... X_GLXMakeCurrent`로 죽는다**
 — 같은 코드를 그대로 여러 번 돌려도 될 때도 있고 안 될 때도 있어서 재현 조건을 못 찾았다

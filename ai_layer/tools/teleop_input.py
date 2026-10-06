@@ -6,11 +6,17 @@ gripper_bit/rotation_rate/episode_end_requested/discard_requested/close)를 구�
 2026-10-06: "조이스틱 없을 때를 대비해서" 추가 — `--input auto`(기본)면 조이스틱을 먼저 찾아보고
 없으면 키보드로 자동 전환, `--input keyboard`/`--input joystick`으로 강제 지정도 가능.
 
-2026-10-06(2차, 기범 지적 — "노트북 키보드인데"): 외장 키보드를 조종용으로 따로 둘 수 없는
-노트북에서는, grab 안 한 키보드 입력(WASD/ENTER 등)이 지금 포커스된 다른 창(터미널 등)에도
-그대로 들어간다 — ENTER가 터미널에 반쯤 쳐둔 명령을 실행시킬 수도 있어 위험. `--grab-keyboard`를
-주면 `KeyboardEEController`가 그 키보드를 커널 레벨로 독점해서 막는다(기본은 안전 우선으로 off).
-독점 중 먹통되면 ESC로 즉시 풀고 빠져나올 수 있다(keyboard_input.KeyboardGrabReleased).
+2026-10-06(3차→4차): evdev로 raw 키보드 장치를 grab하는 설계, 그 다음 MuJoCo 뷰어의 GLFW
+`key_callback`을 쓰는 설계를 거쳐, 지금은 **터미널 raw 모드로 stdin을 직접 읽는 방식**으로
+정착했다(자세한 이유는 keyboard_input.py 모듈 docstring 참고 — teleop_twist_keyboard 같은
+표준 CLI teleop 도구들과 같은 방식). 덕분에 별도 권한도, 뷰어 창도 필요 없고 `--headless`와도
+그냥 같이 쓸 수 있다 — "뷰어 창에 포커스를 줘야 한다"는 제약은 더 이상 없다(터미널에 포커스가
+있으면 됨, 즉 명령어를 실행한 그 터미널).
+
+`resolve_input_mode()`를 따로 둔 이유: 조이스틱 보정은 터미널 입력을 기다리는 블로킹 프롬프트가
+있을 수 있어서 호출 측이 "창을 먼저 띄우고 그 안에서 보정하라"는 안내를 주는 기존 흐름이 있는데,
+키보드 쪽은 생성이 즉시 끝나(블로킹 프롬프트 없음) 그 춤이 필요 없다. 호출 측이 실제 장치를
+만들기 전에 "joystick"/"keyboard" 중 뭐가 될지 미리 알아야 그 분기를 탈 수 있어서 분리했다.
 """
 
 from __future__ import annotations
@@ -20,15 +26,16 @@ import glob
 
 
 def diagnose_no_devices() -> str | None:
-    """evdev로 열리는 입력 장치가 하나도 없을 때(find_keyboard/find_joystick 둘 다 겪는 증상)
-    원인이 "장치가 아예 없음"인지 "권한 문제"인지 구분해서 메시지를 만든다. 문제가 명확한
-    권한 케이스가 아니면 None.
+    """evdev로 열리는 입력 장치가 하나도 없을 때(find_joystick이 겪는 증상) 원인이 "장치가
+    아예 없음"인지 "권한 문제"인지 구분해서 메시지를 만든다. 문제가 명확한 권한 케이스가
+    아니면 None.
 
-    2026-10-06: 실제로 이 증상을 두 번 겪었다 — 조이스틱/키보드 둘 다 evdev.list_devices()가
-    빈 리스트를 돌려줬는데, `/dev/input/event*` 자체는 존재했다(ls로 확인됨). evdev가 각
-    장치를 열어보고 실패하면 조용히 건너뛰므로(예외를 안 띄움), list_devices()만 봐서는
-    "장치가 없다"와 "권한이 없어서 하나도 못 열었다"를 구분할 수 없다 — 글로 직접 비교해서
-    알려준다.
+    2026-10-06: 실제로 이 증상을 겪었다 — evdev.list_devices()가 빈 리스트를 돌려줬는데,
+    `/dev/input/event*` 자체는 존재했다(ls로 확인됨). evdev가 각 장치를 열어보고 실패하면
+    조용히 건너뛰므로(예외를 안 띄움), list_devices()만 봐서는 "장치가 없다"와 "권한이 없어서
+    하나도 못 열었다"를 구분할 수 없다 — 글로 직접 비교해서 알려준다.
+
+    (키보드는 더 이상 evdev를 안 쓰므로 이 함수는 조이스틱 전용이 됐다.)
     """
     import evdev
 
@@ -50,28 +57,33 @@ def diagnose_no_devices() -> str | None:
 def add_input_arg(p: argparse.ArgumentParser) -> None:
     p.add_argument(
         "--input", choices=["auto", "joystick", "keyboard"], default="auto",
-        help="조작 입력 장치. auto(기본)는 조이스틱을 찾아보고 없으면 키보드로 자동 전환.",
-    )
-    p.add_argument(
-        "--grab-keyboard", action="store_true",
-        help="키보드 입력일 때, 이 키보드를 독점(다른 창엔 입력 안 감) — 노트북처럼 조종용을 "
-             "따로 못 둘 때 특히 권장. 먹통되면 ESC로 즉시 해제됨.",
+        help="조작 입력 장치. auto(기본)는 조이스틱을 찾아보고 없으면 키보드로 자동 전환. "
+             "키보드는 이 명령을 실행한 터미널에 포커스가 있어야 동작(별도 권한 불필요).",
     )
 
 
-def build_ee_controller(input_mode: str = "auto", recalibrate: bool = False, grab_keyboard: bool = False):
-    from ai_layer.tools.joystick_input import JoystickEEController, find_joystick
-    from ai_layer.tools.keyboard_input import KeyboardEEController
+def resolve_input_mode(input_mode: str = "auto") -> str:
+    """"auto"를 실제로 "joystick"/"keyboard" 중 뭐가 될지로 미리 정한다 — 장치를 만들지는 않고
+    find_joystick()만 시도해본다. 호출 측이 (조이스틱이면 보정 프롬프트가 있을 수 있으니 창을
+    먼저 띄워야 한다는) 분기를 장치 생성 전에 타야 할 때 쓴다."""
+    if input_mode in ("joystick", "keyboard"):
+        return input_mode
 
-    if input_mode == "keyboard":
-        return KeyboardEEController(grab=grab_keyboard)
-    if input_mode == "joystick":
-        return JoystickEEController(recalibrate=recalibrate)
+    from ai_layer.tools.joystick_input import find_joystick
 
-    # auto
     try:
         find_joystick()
+        return "joystick"
     except RuntimeError:
         print("[teleop] 조이스틱을 못 찾아서 키보드 입력으로 대체합니다 (--input keyboard로 강제 가능).")
-        return KeyboardEEController(grab=grab_keyboard)
+        return "keyboard"
+
+
+def build_ee_controller(input_mode: str = "auto", recalibrate: bool = False):
+    from ai_layer.tools.joystick_input import JoystickEEController
+    from ai_layer.tools.keyboard_input import KeyboardEEController
+
+    resolved = resolve_input_mode(input_mode)
+    if resolved == "keyboard":
+        return KeyboardEEController()
     return JoystickEEController(recalibrate=recalibrate)

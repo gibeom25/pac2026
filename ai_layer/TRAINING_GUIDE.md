@@ -5,11 +5,12 @@
 중간에 건너뛰면 다음 단계에서 원인 찾기 어려운 에러가 난다.
 
 **최근 변경사항 요약** (이 문서가 안 맞는 것 같으면 먼저 여기부터 확인):
-- ⚠️ 데이터 수집 GUI(`tools/record_gui.py`)를 시도했는데 이 머신에서 간헐적으로 `X Error ...
-  BadAccess ... X_GLXMakeCurrent`로 죽는 문제가 있어 **보류**했다 — 재현 조건을 못 찾았고(같은
-  코드를 그대로 여러 번 돌려도 될 때도 안 될 때도 있음), 코드는 남겨뒀지만 지금은 **터미널
-  (`record_mujoco.py`)을 기본으로 쓸 것**. GUI를 다시 시도하고 싶으면 tools/README.md의
-  record_gui.py 절 참고.
+- **GUI로 데이터 수집 + 학습까지 한 화면에서 하려면 `ai_layer/gui/app.py`(PyQt6)를 쓸 것**
+  (`pip install PyQt6 pyqtgraph` 후 `PYTHONPATH=. python ai_layer/gui/app.py`) — 카메라 뷰
+  (손목/오버뷰)+로봇 상태+수집 현황 차트+BC/RL 학습 실행·모니터링까지 전부 화면에서 한다.
+  자세한 건 `ai_layer/gui/README.md`. 구(Dear PyGui) GUI(`tools/record_gui.py`)는 이 머신에서
+  간헐적으로 `X Error ... BadAccess ... X_GLXMakeCurrent`로 죽는 문제가 있어 **보류** —
+  코드는 남겨뒀지만 더 권장하지 않는다. GUI 없이 터미널만 쓰고 싶으면 `record_mujoco.py`.
 - 녹화 중 바닥 접촉은 더 이상 에피소드를 폐기하지 않는다 — 도구 끝이 1cm 밑으로 안 내려가게
   막는 걸로 바뀜(1단계 참고). **RL 쪽은 그대로 접촉=즉시 종료+패널티**(5단계 참고) — 데이터
   수집과 RL 환경의 규약이 이제 서로 다르다는 점에 주의.
@@ -60,10 +61,11 @@ nvidia-smi   # GPU 인식 확인 (torch.cuda.is_available()도 True여야 함)
 
 **조이스틱이 없으면** 모든 녹화/점검 도구가 `--input auto`(기본값)로 자동으로 키보드 입력으로
 전환된다(WASD+RF 이동, QE/ZX/CV 회전, SPACE 트리거, ENTER 저장, BACKSPACE 폐기 — 전체 키 배치는
-tools/README.md의 keyboard_input.py 절). `--input keyboard`로 강제 지정도 가능. **노트북
-키보드처럼 조종용을 따로 못 두면** `--grab-keyboard`를 같이 줄 것 — 안 주면 WASD/ENTER가
-지금 포커스된 다른 창(터미널 등)에도 같이 들어간다(ENTER가 터미널 명령을 실행시킬 수도 있어
-위험). grab 중 먹통되면 ESC로 즉시 해제됨.
+tools/README.md의 keyboard_input.py 절). `--input keyboard`로 강제 지정도 가능. 이 키보드
+입력은 evdev로 장치를 직접 읽는 게 아니라 **이 명령을 실행한 터미널 자체를 raw 모드로 바꿔서
+stdin을 그대로 읽는다**(teleop_twist_keyboard 같은 표준 CLI teleop 도구들과 같은 방식) — 별도
+권한이 전혀 필요 없고, 뷰어 창 없이도(`--headless`와도 같이 씀) 그냥 동작한다. 조작 중엔 **이
+명령을 실행한 터미널**에 포커스가 있으면 된다(다른 창 클릭 불필요). record_gui.py에서도 동작함.
 
 **스로틀(z축) 영점 보정**: 처음 조이스틱을 쓰는 녹화 도구를 실행하면 "슬라이더를 중립 위치에
 놓고 Enter"를 한 번 물어보고 `~/.config/pac2026/joystick_calibration.json`에 저장한다 — 그 뒤로는

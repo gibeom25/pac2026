@@ -36,7 +36,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from ai_layer.tools.joystick_input import JoystickEEController  # noqa: E402
 from ai_layer.tools.keyboard_input import KeyboardEEController  # noqa: E402
-from ai_layer.tools.teleop_input import add_input_arg, build_ee_controller  # noqa: E402
+from ai_layer.tools.teleop_input import add_input_arg, resolve_input_mode  # noqa: E402
 from ai_layer.tools.record_mujoco import (  # noqa: E402
     BEAD_STRIDE,
     FLOOR_GEOM_NAME,
@@ -184,10 +184,29 @@ def main() -> None:
         invert_x=args.invert_x, invert_y=args.invert_y, invert_z=args.invert_z,
         invert_roll=args.invert_roll, invert_pitch=args.invert_pitch,
     )
+    resolved_input = resolve_input_mode(args.input)
+
     ctl = None
     try:
-        if args.headless:
-            ctl = build_ee_controller(args.input, recalibrate=args.recalibrate_joystick, grab_keyboard=args.grab_keyboard)
+        if resolved_input == "keyboard":
+            # 생성이 바로 끝난다(블로킹 프롬프트 없음, 터미널 raw 모드만 설정) — 뷰어 창과
+            # 무관하게 동작하므로 --headless와도 그냥 같이 쓸 수 있다.
+            ctl = KeyboardEEController()
+            if args.headless:
+                _run(
+                    ctl, model, data, viewer=None,
+                    max_linear_speed=args.max_linear_speed, max_angular_speed=args.max_angular_speed,
+                    hz=args.hz, **invert_kwargs,
+                )
+            else:
+                with mujoco.viewer.launch_passive(model, data) as viewer:
+                    viewer.sync()
+                    _run(
+                        ctl, model, data, viewer,
+                        args.max_linear_speed, args.max_angular_speed, args.hz, **invert_kwargs,
+                    )
+        elif args.headless:
+            ctl = JoystickEEController(recalibrate=args.recalibrate_joystick)
             _run(
                 ctl, model, data, viewer=None,
                 max_linear_speed=args.max_linear_speed, max_angular_speed=args.max_angular_speed,
@@ -199,7 +218,7 @@ def main() -> None:
             # 그 전에 창을 열어둬야 "창이 하나도 없이 멈춰서 헤드리스처럼 보이는" 오해가 안 생긴다.
             with mujoco.viewer.launch_passive(model, data) as viewer:
                 viewer.sync()
-                ctl = build_ee_controller(args.input, recalibrate=args.recalibrate_joystick, grab_keyboard=args.grab_keyboard)
+                ctl = JoystickEEController(recalibrate=args.recalibrate_joystick)
                 _run(
                     ctl, model, data, viewer,
                     args.max_linear_speed, args.max_angular_speed, args.hz, **invert_kwargs,
