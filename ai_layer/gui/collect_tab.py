@@ -115,6 +115,7 @@ class CollectTab(QWidget):
         # 화면이 늘어나 보이지 않고 그냥 레터박스만 커졌었는데, "차라리 좌측을 늘려"라는 요청대로
         # 남는 공간은 왼쪽 설정 패널이 가져가게 둘 다 stretch=1로 맞췄다(같이 커짐).
         root_layout.addWidget(left_scroll, stretch=1)
+        self._left_scroll = left_scroll  # repo-id 등 검증 실패 시 해당 필드로 스크롤하는 데 씀
 
         right_col = QVBoxLayout()
         root_layout.addLayout(right_col, stretch=1)
@@ -143,11 +144,11 @@ class CollectTab(QWidget):
         form.addRow("소스", self.source_combo)
 
         self.repo_id_edit = QLineEdit()
-        self.repo_id_edit.setPlaceholderText("예: my-user/so101-weld-demo (--dry-run이면 비워도 됨)")
+        self.repo_id_edit.setPlaceholderText("예: my-user/so101-weld-demo (dry-run이거나 root만 채워도 됨)")
         form.addRow("repo-id", self.repo_id_edit)
 
         self.root_edit = QLineEdit()
-        self.root_edit.setPlaceholderText("비우면 datasets/<repo-id>")
+        self.root_edit.setPlaceholderText("저장 경로. 비우면 datasets/<repo-id> — root만 채워도 repo-id는 폴더명으로 자동 채움")
         form.addRow("root", self.root_edit)
 
         self.dry_run_check = QCheckBox("dry-run (저장 안 함, 연습용)")
@@ -318,10 +319,17 @@ class CollectTab(QWidget):
 
     # ---- 공통 ---------------------------------------------------------
     def _collect_args(self) -> argparse.Namespace:
+        repo_id = self.repo_id_edit.text().strip() or None
+        root = self.root_edit.text().strip() or None
+        if repo_id is None and root is not None:
+            # 2026-10-06: repo-id를 안 채우고 root만 채운 채로 "repo-id 필요" 에러를 보고
+            # 헷갈렸다는 피드백 — root가 있으면 그 폴더 이름으로 repo-id를 그냥 만들어준다
+            # (repo_id는 로컬 저장 시 사실상 이름표일 뿐이라 root 폴더명을 그대로 써도 무방).
+            repo_id = Path(root).name or root
         return argparse.Namespace(
             source=self.source_combo.currentText(),
-            repo_id=self.repo_id_edit.text().strip() or None,
-            root=self.root_edit.text().strip() or None,
+            repo_id=repo_id,
+            root=root,
             dry_run=self.dry_run_check.isChecked(),
             fps=self.fps_spin.value(),
             num_episodes=self.num_episodes_spin.value(),
@@ -384,6 +392,13 @@ class CollectTab(QWidget):
             self._ctl.close()
             self._ctl = None
 
+    def _focus_field(self, widget: QWidget) -> None:
+        """설정 패널이 스크롤 영역이라 필요한 입력칸이 화면 밖에 있을 수 있다(2026-10-06:
+        repo-id가 스크롤에 가려 안 보여서 엉뚱한 칸에 입력하고 헷갈렸다는 피드백) — 에러를
+        보여줄 때 그 칸이 보이게 스크롤하고 포커스까지 준다."""
+        self._left_scroll.ensureWidgetVisible(widget)
+        widget.setFocus()
+
     def _connect_real_robot(self, args: argparse.Namespace) -> bool:
         """실로봇에 연결한다. 이미 연결돼 있으면(테스트에서 이어오는 경우) 그대로 재사용한다.
         실패하면 QMessageBox로 알리고 False — 이 코드는 실제 하드웨어로 검증하지 못했다(이
@@ -391,6 +406,7 @@ class CollectTab(QWidget):
         if self._robot is not None:
             return True
         if not args.real_port:
+            self._focus_field(self.real_port_edit)
             QMessageBox.warning(self, "포트 필요", "실로봇 연결에 필요한 port를 입력하세요(예: /dev/ttyACM0).")
             return False
         try:
@@ -487,7 +503,8 @@ class CollectTab(QWidget):
     def _on_test_to_record(self) -> None:
         args = self._collect_args()
         if not args.dry_run and not args.repo_id:
-            QMessageBox.warning(self, "repo-id 필요", "dry-run이 아니면 repo-id를 입력해야 합니다.")
+            self._focus_field(self.repo_id_edit)
+            QMessageBox.warning(self, "repo-id 필요", "dry-run이 아니면 repo-id나 root 중 하나는 입력해야 합니다.")
             return
         self._timer.stop()
         if self._ticker is not None:
@@ -500,7 +517,8 @@ class CollectTab(QWidget):
     def _on_start_session(self) -> None:
         args = self._collect_args()
         if not args.dry_run and not args.repo_id:
-            QMessageBox.warning(self, "repo-id 필요", "dry-run이 아니면 repo-id를 입력해야 합니다.")
+            self._focus_field(self.repo_id_edit)
+            QMessageBox.warning(self, "repo-id 필요", "dry-run이 아니면 repo-id나 root 중 하나는 입력해야 합니다.")
             return
         self._begin_recording_session(args, reuse_ctl=False)
 
