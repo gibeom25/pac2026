@@ -64,7 +64,10 @@ _TRACKED_KEYS = (
 def list_keyboards() -> None:
     devs = [evdev.InputDevice(p) for p in evdev.list_devices()]
     if not devs:
-        print("[keyboard] /dev/input에 인식된 장치가 없습니다.")
+        from ai_layer.tools.teleop_input import diagnose_no_devices
+
+        msg = diagnose_no_devices()
+        print(f"[keyboard] {msg}" if msg else "[keyboard] /dev/input에 인식된 장치가 없습니다.")
         return
     for d in devs:
         caps = d.capabilities().get(ecodes.EV_KEY, [])
@@ -77,9 +80,15 @@ def find_keyboard() -> str:
         dev = evdev.InputDevice(path)
         if _KEYBOARD_PROBE_CODE in dev.capabilities().get(ecodes.EV_KEY, []):
             return path
+
+    from ai_layer.tools.teleop_input import diagnose_no_devices
+
+    perm_msg = diagnose_no_devices()
+    if perm_msg:
+        raise RuntimeError(f"키보드로 보이는 입력 장치를 못 찾았습니다.\n{perm_msg}")
     raise RuntimeError(
         "키보드로 보이는 입력 장치를 못 찾았습니다(KEY_A를 가진 장치 없음). "
-        "--list로 연결된 장치를 확인하세요. evdev로 읽으려면 보통 'input' 그룹 권한이 필요합니다."
+        "--list로 연결된 장치를 확인하세요."
     )
 
 

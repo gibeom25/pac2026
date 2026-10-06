@@ -16,6 +16,35 @@ gripper_bit/rotation_rate/episode_end_requested/discard_requested/close)를 구�
 from __future__ import annotations
 
 import argparse
+import glob
+
+
+def diagnose_no_devices() -> str | None:
+    """evdev로 열리는 입력 장치가 하나도 없을 때(find_keyboard/find_joystick 둘 다 겪는 증상)
+    원인이 "장치가 아예 없음"인지 "권한 문제"인지 구분해서 메시지를 만든다. 문제가 명확한
+    권한 케이스가 아니면 None.
+
+    2026-10-06: 실제로 이 증상을 두 번 겪었다 — 조이스틱/키보드 둘 다 evdev.list_devices()가
+    빈 리스트를 돌려줬는데, `/dev/input/event*` 자체는 존재했다(ls로 확인됨). evdev가 각
+    장치를 열어보고 실패하면 조용히 건너뛰므로(예외를 안 띄움), list_devices()만 봐서는
+    "장치가 없다"와 "권한이 없어서 하나도 못 열었다"를 구분할 수 없다 — 글로 직접 비교해서
+    알려준다.
+    """
+    import evdev
+
+    raw_paths = glob.glob("/dev/input/event*")
+    if not raw_paths:
+        return None  # 장치 파일 자체가 없음 — 권한 문제 아님(진짜로 아무것도 안 꽂혀 있음)
+    if evdev.list_devices():
+        return None  # 최소 하나는 열림 — 권한 문제 아님
+    return (
+        f"/dev/input에 장치 파일이 {len(raw_paths)}개 있지만(ls /dev/input/event*) evdev로는 "
+        "하나도 못 열었습니다 — 거의 확실히 'input' 그룹 권한 문제입니다. 고치는 법:\n"
+        "    sudo usermod -aG input $USER\n"
+        "    그 다음 로그아웃 후 다시 로그인(또는 재부팅) — 그룹 변경은 새 로그인 세션부터 "
+        "적용되고, 같은 터미널에서 su/newgrp로도 당장 적용 가능(newgrp input).\n"
+        "    확인: groups 에 input이 보이는지, 그 다음 --list를 다시 실행."
+    )
 
 
 def add_input_arg(p: argparse.ArgumentParser) -> None:

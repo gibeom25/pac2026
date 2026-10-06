@@ -68,7 +68,10 @@ def save_calibration(data: dict) -> None:
 def list_joysticks() -> None:
     devs = [evdev.InputDevice(p) for p in evdev.list_devices()]
     if not devs:
-        print("[joystick] /dev/input에 인식된 장치가 없습니다.")
+        from ai_layer.tools.teleop_input import diagnose_no_devices
+
+        msg = diagnose_no_devices()
+        print(f"[joystick] {msg}" if msg else "[joystick] /dev/input에 인식된 장치가 없습니다.")
         return
     for d in devs:
         print(f"  {d.path}  {d.name}")
@@ -79,6 +82,12 @@ def find_joystick(name_substring: str = "Extreme 3D") -> str:
         dev = evdev.InputDevice(path)
         if name_substring.lower() in dev.name.lower():
             return path
+
+    from ai_layer.tools.teleop_input import diagnose_no_devices
+
+    perm_msg = diagnose_no_devices()
+    if perm_msg:
+        raise RuntimeError(f"'{name_substring}' 이름을 가진 조이스틱을 못 찾았습니다.\n{perm_msg}")
     raise RuntimeError(
         f"'{name_substring}' 이름을 가진 조이스틱을 못 찾았습니다. "
         f"--list로 연결된 장치를 확인하세요."
