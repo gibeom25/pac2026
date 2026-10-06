@@ -58,6 +58,10 @@ nvidia-smi   # GPU 인식 확인 (torch.cuda.is_available()도 True여야 함)
 /dev/input/ | grep event`) 확인 — 권한 문제로 evdev가 장치를 못 열면(Permission denied) 사용자를
 `input` 그룹에 추가(`sudo usermod -aG dialout,input $USER` 후 재로그인)하거나 udev 규칙을 추가할 것.
 
+**조이스틱이 없으면** 모든 녹화/점검 도구가 `--input auto`(기본값)로 자동으로 키보드 입력으로
+전환된다(WASD+RF 이동, QE/ZX/CV 회전, SPACE 트리거, ENTER 저장, BACKSPACE 폐기 — 전체 키 배치는
+tools/README.md의 keyboard_input.py 절). `--input keyboard`로 강제 지정도 가능.
+
 **스로틀(z축) 영점 보정**: 처음 조이스틱을 쓰는 녹화 도구를 실행하면 "슬라이더를 중립 위치에
 놓고 Enter"를 한 번 물어보고 `~/.config/pac2026/joystick_calibration.json`에 저장한다 — 그 뒤로는
 슬라이더가 실제로 어디 있든 그 저장값을 기준으로 삼는다(다시 물어볼 필요 없음). 슬라이더 느낌이

@@ -125,6 +125,37 @@ PYTHONPATH=. python ai_layer/tools/joystick_input.py [--list]
 단독 실행하면 라이브 진단 모드(축/버튼 값 + 눌린 버튼 이름 실시간 출력, `--list`는 연결된
 입력 장치 목록만 출력) — 어느 물리 버튼이 어떤 코드인지 헷갈리면 이걸로 직접 눌러서 확인할 것.
 
+### keyboard_input.py / teleop_input.py — 조이스틱 없을 때 키보드로 대체 (2026-10-06)
+
+`KeyboardEEController`가 `JoystickEEController`와 **똑같은 공개 인터페이스**(poll/ee_velocity/
+gripper_bit/rotation_rate/episode_end_requested/discard_requested/close)를 구현해서 드롭인으로
+바꿔 끼울 수 있다. `teleop_input.build_ee_controller(input_mode, recalibrate)`가 실제 선택을
+담당하고 `record_mujoco.py`/`check_ee.py`/`record_gui.py` 전부 이걸 쓴다 — 셋 다 공통으로
+`--input {auto,joystick,keyboard}`를 받는다(기본 `auto`: 조이스틱을 찾아보고 없으면 키보드로
+자동 전환, 전환되면 콘솔에 안내 메시지 출력).
+
+키 배치(조이스틱의 "누르는 동안 레이트" 관례 그대로 — 아날로그가 없어서 전부 on/off):
+
+| 기능 | 키 |
+|---|---|
+| EE +x / -x | W / S |
+| EE +y / -y | D / A |
+| EE +z / -z | R / F |
+| roll -/+ | Q / E |
+| pitch -/+ | Z / X |
+| yaw -/+ | C / V |
+| 그리퍼/도구 신호(누르는 동안) | SPACE |
+| 에피소드 저장+종료 (BTN_THUMB) | ENTER |
+| 에피소드 폐기+재시도 (BTN_THUMB2) | BACKSPACE |
+
+```bash
+PYTHONPATH=. python ai_layer/tools/keyboard_input.py [--list]   # 단독 진단 모드
+PYTHONPATH=. python ai_layer/tools/record_mujoco.py --input keyboard --dry-run --num-episodes 1
+```
+
+joystick_input.py와 같은 evdev 기반이라 키보드도 보통 `input` 그룹 권한이 필요하다(0단계 참고).
+`--recalibrate-joystick`은 키보드 입력일 때는 그냥 무시된다(스로틀 자체가 없으므로).
+
 ## record_mujoco.py — 조이스틱 -> MuJoCo EE 리그 미러링 데이터 수집 (2026-09-22, 기범 / 2026-09-23 조이스틱 전환)
 
 실물 팔로워/카메라 없이 **조이스틱 하나만으로** BC 학습용 LeRobotDataset을 만든다. 더 이상 관절이

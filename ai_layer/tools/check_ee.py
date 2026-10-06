@@ -35,6 +35,8 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from ai_layer.tools.joystick_input import JoystickEEController  # noqa: E402
+from ai_layer.tools.keyboard_input import KeyboardEEController  # noqa: E402
+from ai_layer.tools.teleop_input import add_input_arg, build_ee_controller  # noqa: E402
 from ai_layer.tools.record_mujoco import (  # noqa: E402
     BEAD_STRIDE,
     FLOOR_GEOM_NAME,
@@ -73,13 +75,14 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--headless", action="store_true", help="뷰어 창 없이 콘솔 출력만 (기본: 창 띄움)")
     p.add_argument(
         "--recalibrate-joystick", action="store_true",
-        help="저장된 스로틀 영점(joystick_input.CALIBRATION_PATH)을 무시하고 다시 물어봄",
+        help="저장된 스로틀 영점(joystick_input.CALIBRATION_PATH)을 무시하고 다시 물어봄 (조이스틱 입력일 때만)",
     )
+    add_input_arg(p)
     return p.parse_args()
 
 
 def _run(
-    ctl: JoystickEEController,
+    ctl: JoystickEEController | KeyboardEEController,
     model,
     data,
     viewer,
@@ -184,7 +187,7 @@ def main() -> None:
     ctl = None
     try:
         if args.headless:
-            ctl = JoystickEEController(recalibrate=args.recalibrate_joystick)
+            ctl = build_ee_controller(args.input, recalibrate=args.recalibrate_joystick)
             _run(
                 ctl, model, data, viewer=None,
                 max_linear_speed=args.max_linear_speed, max_angular_speed=args.max_angular_speed,
@@ -196,7 +199,7 @@ def main() -> None:
             # 그 전에 창을 열어둬야 "창이 하나도 없이 멈춰서 헤드리스처럼 보이는" 오해가 안 생긴다.
             with mujoco.viewer.launch_passive(model, data) as viewer:
                 viewer.sync()
-                ctl = JoystickEEController(recalibrate=args.recalibrate_joystick)
+                ctl = build_ee_controller(args.input, recalibrate=args.recalibrate_joystick)
                 _run(
                     ctl, model, data, viewer,
                     args.max_linear_speed, args.max_angular_speed, args.hz, **invert_kwargs,

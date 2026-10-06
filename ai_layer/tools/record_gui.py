@@ -39,6 +39,8 @@ from lerobot.utils.rotation import Rotation
 
 from ai_layer.kinematics import pose_delta, pose_to_state
 from ai_layer.tools.joystick_input import JoystickEEController
+from ai_layer.tools.keyboard_input import KeyboardEEController
+from ai_layer.tools.teleop_input import add_input_arg, build_ee_controller
 from ai_layer.tools.record_mujoco import (  # noqa: E402 — record_mujoco.py의 검증된 로직 재사용
     ACTION_KEYS,
     BEAD_STRIDE,
@@ -146,7 +148,7 @@ class _EpisodeTicker:
         self.last_contact = False
         self.last_trigger = 0.0
 
-    def tick(self, ctl: JoystickEEController, dataset, force_end: bool, force_discard: bool) -> str | None:
+    def tick(self, ctl: JoystickEEController | KeyboardEEController, dataset, force_end: bool, force_discard: bool) -> str | None:
         """한 프레임 진행. 끝났으면 "saved"/"discarded", 아니면 None."""
         if self.max_steps is not None and self.step >= self.max_steps:
             return self._finish(dataset, discard=False)
@@ -237,6 +239,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--invert-roll", action="store_true")
     p.add_argument("--invert-pitch", action="store_true")
     p.add_argument("--recalibrate-joystick", action="store_true")
+    add_input_arg(p)
     args = p.parse_args()
     if args.repo_id is None and not args.dry_run:
         p.error("--repo-id는 --dry-run이 아니면 필수다.")
@@ -344,7 +347,7 @@ def main() -> None:
         sampler = BalancedSceneSampler(combos, counts_path)
     _refresh_chart()
 
-    ctl = JoystickEEController(recalibrate=args.recalibrate_joystick)
+    ctl = build_ee_controller(args.input, recalibrate=args.recalibrate_joystick)
 
     try:
         while dpg.is_dearpygui_running():

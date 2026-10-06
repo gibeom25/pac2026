@@ -80,6 +80,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from ai_layer.kinematics import pose_delta, pose_to_state, pose_to_xyzrotvec  # noqa: E402
 from ai_layer.tools.joystick_input import JoystickEEController  # noqa: E402
+from ai_layer.tools.keyboard_input import KeyboardEEController  # noqa: E402
+from ai_layer.tools.teleop_input import add_input_arg, build_ee_controller  # noqa: E402
 
 from lerobot.datasets.lerobot_dataset import LeRobotDataset  # noqa: E402
 from lerobot.datasets.utils import build_dataset_frame, hw_to_dataset_features  # noqa: E402
@@ -324,8 +326,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--invert-pitch", action="store_true", help="pitch 방향 반전")
     p.add_argument(
         "--recalibrate-joystick", action="store_true",
-        help="저장된 스로틀 영점(joystick_input.CALIBRATION_PATH)을 무시하고 다시 물어봄",
+        help="저장된 스로틀 영점(joystick_input.CALIBRATION_PATH)을 무시하고 다시 물어봄 (조이스틱 입력일 때만)",
     )
+    add_input_arg(p)
     args = p.parse_args()
     if args.repo_id is None and not args.dry_run:
         p.error("--repo-id는 --dry-run이 아니면 필수다.")
@@ -400,7 +403,7 @@ def build_dataset(args: argparse.Namespace) -> LeRobotDataset:
     )
 
 
-def _run_one_episode(args: argparse.Namespace, ctl: JoystickEEController, model, data, renderer, dataset, viewer) -> bool:
+def _run_one_episode(args: argparse.Namespace, ctl: JoystickEEController | KeyboardEEController, model, data, renderer, dataset, viewer) -> bool:
     """에피소드 하나를 기록한다. 저장되면 True, 폐기(BTN_THUMB2)되면 False를 반환한다.
 
     dataset(및 renderer)이 None이면 --dry-run — 물리/조작/버튼/뷰어는 전부 동일하게 돌되 카메라
@@ -548,7 +551,7 @@ def _run_one_episode(args: argparse.Namespace, ctl: JoystickEEController, model,
     return True
 
 
-def _run(args: argparse.Namespace, ctl: JoystickEEController, dataset, sampler: BalancedSceneSampler) -> None:
+def _run(args: argparse.Namespace, ctl: JoystickEEController | KeyboardEEController, dataset, sampler: BalancedSceneSampler) -> None:
     """에피소드마다 BalancedSceneSampler로 (씬, variant)를 고르고, 그 씬을 새로 로드해 기록한다.
 
     씬이 에피소드마다 바뀔 수 있어 MjModel/렌더러/뷰어를 매 에피소드 다시 만든다 — "준비되면 Enter"
@@ -595,7 +598,7 @@ def main() -> None:
     args = parse_args()
 
     if args.headless:
-        ctl = JoystickEEController(recalibrate=args.recalibrate_joystick)
+        ctl = build_ee_controller(args.input, recalibrate=args.recalibrate_joystick)
     else:
         # 뷰어를 조이스틱 연결/보정보다 먼저 띄운다 — 2026-10-06: 저장된 스로틀 보정값이 없으면
         # JoystickEEController() 생성자 안에서 터미널 input()으로 멈추는데, 그 시점엔 아직 MuJoCo
@@ -609,7 +612,7 @@ def main() -> None:
         mujoco.mj_forward(boot_model, boot_data)
         with mujoco.viewer.launch_passive(boot_model, boot_data) as boot_viewer:
             boot_viewer.sync()
-            ctl = JoystickEEController(recalibrate=args.recalibrate_joystick)
+            ctl = build_ee_controller(args.input, recalibrate=args.recalibrate_joystick)
 
     if args.dry_run:
         print("[record] --dry-run: 저장은 전부 건너뛴다 (조작/씬 전환/버튼/뷰어는 실제 수집과 동일).")
