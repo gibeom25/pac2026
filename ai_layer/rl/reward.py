@@ -22,15 +22,24 @@ from dataclasses import dataclass
 import torch
 
 
-def imitation_reward(action_rl: torch.Tensor, action_bc: torch.Tensor | None) -> torch.Tensor:
-    """R_imitation = -||a_RL - a_BC||^2. BC teacher가 없으면(1차 체크포인트 없음) 0 반환.
+def imitation_reward(
+    action_rl: torch.Tensor, action_bc: torch.Tensor | None, dim_weights: torch.Tensor | None = None
+) -> torch.Tensor:
+    """R_imitation = -||w * (a_RL - a_BC)||^2. BC teacher가 없으면(1차 체크포인트 없음) 0 반환.
 
     action_bc가 None인 경우는 "아직 BC 체크포인트가 없어 순수 R_track+R_smooth로만 학습" 상황
     (train_rl.py에서 weight_schedule의 w1도 함께 0으로 둘 것).
+
+    dim_weights: (action_dim,) 성분별 가중치 — 2026-10-06: "회전은 데이터셋엔 저장하되 RL
+    보상에서는 덜 참고하게" 요청으로 추가. 기본(None)이면 전부 1(기존과 완전히 동일, 회귀 없음).
+    so101_seam_env.py가 위치 성분은 1.0, 회전 성분은 더 작은 값으로 넘긴다.
     """
     if action_bc is None:
         return torch.zeros(action_rl.shape[0], device=action_rl.device)
-    return -((action_rl - action_bc) ** 2).sum(dim=-1)
+    diff = action_rl - action_bc
+    if dim_weights is not None:
+        diff = diff * dim_weights
+    return -(diff**2).sum(dim=-1)
 
 
 def _point_to_polyline(point: torch.Tensor, polyline: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -146,9 +155,15 @@ def coverage_reward(
     return reward, new_mask
 
 
-def smoothness_reward(action_t: torch.Tensor, action_tm1: torch.Tensor) -> torch.Tensor:
-    """R_smooth = -||a_t - a_{t-1}||^2."""
-    return -((action_t - action_tm1) ** 2).sum(dim=-1)
+def smoothness_reward(
+    action_t: torch.Tensor, action_tm1: torch.Tensor, dim_weights: torch.Tensor | None = None
+) -> torch.Tensor:
+    """R_smooth = -||w * (a_t - a_{t-1})||^2. dim_weights: imitation_reward와 동일 — 회전 성분
+    가중치를 낮춰서 RL이 position/rotation을 같은 비중으로 "매끄러움" 패널티를 받지 않게 한다."""
+    diff = action_t - action_tm1
+    if dim_weights is not None:
+        diff = diff * dim_weights
+    return -(diff**2).sum(dim=-1)
 
 
 @dataclass
@@ -188,22 +203,24 @@ def total_reward(
     base_speed: float = 0.01,
     coverage_radius: float = 0.008,
     off_target_penalty_scale: float = 2.0,
+    dim_weights: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """action_rl / action_bc / action_tm1 은 모두 같은 스케일(env 정규화 [-1,1])이어야 한다.
 
     coverage_mask: (N, K) bool, 에피소드 시작 시 전부 False로 호출 측이 초기화 — coverage_reward
-    참고. gripper_active: (N,) 이번 스텝 실제 도포 여부(0/1 또는 bool).
+    참고. gripper_active: (N,) 이번 스텝 실제 도포 여부(0/1 또는 bool). dim_weights는
+    imitation_reward/smoothness_reward로 그대로 전달(회전 성분 가중치 낮추기용, 2026-10-06).
 
     Returns:
         reward, new_progress, new_coverage_mask
     """
     w1, w2, w3, w4 = weights
-    r_imit = imitation_reward(action_rl, action_bc)
+    r_imit = imitation_reward(action_rl, action_bc, dim_weights)
     r_track, new_progress = track_reward(
         eef_pos, target_polyline, prev_progress, curvature_at_progress, thickness_at_progress,
         lambda_consistency, base_speed=base_speed,
     )
-    r_smooth = smoothness_reward(action_rl, action_tm1)
+    r_smooth = smoothness_reward(action_rl, action_tm1, dim_weights)
     r_coverage, new_coverage_mask = coverage_reward(
         eef_pos, target_polyline, coverage_mask, gripper_active,
         coverage_radius=coverage_radius, off_target_penalty_scale=off_target_penalty_scale,

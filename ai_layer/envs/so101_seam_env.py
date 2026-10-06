@@ -113,6 +113,13 @@ class SO101SeamEnvCfg:
     off_seam_safety_dist: float = 0.03  # 이거보다 멀면 트리거를 눌러도 비드 강제 OFF (안전 컷오프)
     floor_contact_penalty: float = 5.0  # 바닥/용지 접촉 시 추가 음의 보상(막대 하나 스케일보다 훨씬 큼)
 
+    # 2026-10-06: "회전은 데이터셋에 저장은 하되 RL은 회전을 덜 참고하게" — imitation_reward/
+    # smoothness_reward 계산에서 회전 성분(drx,dry,drz)에 곱할 가중치. 1.0이면 위치와 동등(이전
+    # 동작), 작을수록 RL이 "BC 회전을 똑같이 따라하는지"/"회전이 매끄러운지"에 덜 민감해진다 —
+    # 위치(선 추종)를 우선하고 회전은 참고만 하는 쪽으로. bc_action_distance 로그는 영향 안 받음
+    # (그건 가중치 없는 원본 거리를 그대로 보여줌 — 순수 모니터링용).
+    rotation_reward_weight: float = 0.3
+
     device: str = "cpu"
 
 
@@ -133,6 +140,9 @@ class SO101SeamEnv(gym.Env):
         self.floor_gid = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_GEOM, FLOOR_GEOM_NAME)
 
         self._action_scale = np.array([self.cfg.action_scale_pos] * 3 + [self.cfg.action_scale_rot] * 3)
+        self._action_dim_weights = torch.tensor(
+            [1.0] * 3 + [self.cfg.rotation_reward_weight] * 3
+        )  # imitation/smoothness 보상용 — 위치 1.0, 회전은 낮춤(위 rotation_reward_weight 참고)
         self.seam_gt = SeamGroundTruth(num_points=PATH_NUM_POINTS)
         self._rng = np.random.default_rng()
 
@@ -235,6 +245,7 @@ class SO101SeamEnv(gym.Env):
             lambda_consistency=self._weight_schedule.lambda_consistency,
             base_speed=self.cfg.target_speed_base,
             coverage_radius=self.cfg.coverage_radius,
+            dim_weights=self._action_dim_weights,
         )
         self._prev_progress = new_progress_t.item()
         self._coverage_mask = new_coverage_mask
