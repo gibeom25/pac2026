@@ -15,9 +15,9 @@
      실시간 카운트 — 세션 중 즉시 갱신, meta/scene_balance.json과 동일 소스).
 
 record_mujoco.py의 물리/조이스틱/데이터셋/balanced 샘플링 로직을 그대로 재사용한다(새로 안
-만듦) — 여기서 새로 만든 건 "한 번에 쭉 도는 while 루프"를 "GUI 프레임마다 한 스텝씩" 도는
-형태로 바꾼 _EpisodeTicker 뿐이다 (record_mujoco.py의 터미널 while 루프는 안 건드림 — 이미
-검증된 터미널 플로우를 그대로 쓰고 싶은 사람은 계속 그걸 쓰면 됨).
+만듦) — "한 번에 쭉 도는 while 루프"를 "GUI 프레임마다 한 스텝씩" 도는 형태로 바꾼
+MujocoDualCamera/EpisodeTicker는 ai_layer/tools/episode_ticker.py로 뽑아냈다(2026-10-06,
+PyQt GUI와 공유 — framework-agnostic이라 Dear PyGui 의존 없이도 import 가능).
 
 실행 (pac2026 conda 환경, pip install dearpygui 필요):
   PYTHONPATH=. python ai_layer/tools/record_gui.py --repo-id <hf-user>/so101-weld-demo --num-episodes 30
@@ -27,75 +27,25 @@ record_mujoco.py의 물리/조이스틱/데이터셋/balanced 샘플링 로직�
 from __future__ import annotations
 
 import argparse
-import time
 from pathlib import Path
 
 import dearpygui.dearpygui as dpg
 import mujoco
 import numpy as np
 
-from lerobot.datasets.utils import build_dataset_frame
-from lerobot.utils.rotation import Rotation
-
-from ai_layer.kinematics import pose_delta, pose_to_state
+from ai_layer.tools.episode_ticker import EpisodeTicker, MujocoDualCamera
 from ai_layer.tools.joystick_input import JoystickEEController
 from ai_layer.tools.keyboard_input import KeyboardEEController
-from ai_layer.tools.teleop_input import add_input_arg, build_ee_controller
+from ai_layer.tools.teleop_input import add_input_arg, resolve_input_mode
 from ai_layer.tools.record_mujoco import (  # noqa: E402 — record_mujoco.py의 검증된 로직 재사용
-    ACTION_KEYS,
-    BEAD_STRIDE,
     CAMERA_HW,
-    CAMERA_NAME,
-    EE_BODY_NAME,
-    FLOOR_GEOM_NAME,
-    IDENTITY_QUAT,
-    MIN_TIP_Z,
-    MOCAP_BODY_NAME,
-    MOCAP_HOME,
     N_VARIANTS,
-    ROD_GEOM_NAME,
     SCENE_VARIANTS,
-    STATE_KEYS,
-    WORKSPACE_X,
-    WORKSPACE_Y,
-    WORKSPACE_Z,
     BalancedSceneSampler,
-    BeadDrop,
     _build_combos,
-    _contact_pos,
-    _draw_bead_trail,
-    _ee_pose_xyzrotvec,
     _mjcf_path,
-    _rod_tip_world,
-    _rotmat_to_mujoco_quat,
     build_dataset,
 )
-
-OVERVIEW_CAMERA_NAME = "overview"
-
-
-class MujocoDualCamera:
-    """손목/오버뷰 두 카메라를 같은 mujoco.Renderer로 렌더링.
-
-    실로봇 전환 시 이 클래스를 real-camera 버전으로 바꿔 끼우면 된다 — GUI/에피소드 로직은
-    get_wrist_frame()/get_overview_frame()이 (H,W,3) uint8 RGB를 돌려준다는 계약만 보고 동작한다.
-    """
-
-    def __init__(self, model):
-        self._renderer = mujoco.Renderer(model, height=CAMERA_HW[0], width=CAMERA_HW[1])
-
-    def get_wrist_frame(self, data, bead_points: list[BeadDrop]) -> np.ndarray:
-        self._renderer.update_scene(data, camera=CAMERA_NAME)
-        _draw_bead_trail(self._renderer.scene, bead_points)
-        return self._renderer.render()
-
-    def get_overview_frame(self, data, bead_points: list[BeadDrop]) -> np.ndarray:
-        self._renderer.update_scene(data, camera=OVERVIEW_CAMERA_NAME)
-        _draw_bead_trail(self._renderer.scene, bead_points)
-        return self._renderer.render()
-
-    def close(self) -> None:
-        self._renderer.close()
 
 
 def _rgb_to_dpg_texture(frame_rgb_uint8: np.ndarray) -> np.ndarray:
@@ -105,119 +55,6 @@ def _rgb_to_dpg_texture(frame_rgb_uint8: np.ndarray) -> np.ndarray:
     rgba[:, :, :3] = frame_rgb_uint8.astype(np.float32) / 255.0
     rgba[:, :, 3] = 1.0
     return rgba.flatten()
-
-
-class _EpisodeTicker:
-    """record_mujoco.py `_run_one_episode()`의 while 루프 한 바퀴를 tick() 한 번으로 쪼갠 버전.
-
-    GUI는 블로킹 while을 돌릴 수 없으므로(프레임마다 그리고 돌아와야 함) 상태를 인스턴스에
-    들고 tick()을 GUI 루프에서 매 프레임 호출한다. 물리/비드/접촉/높이제한 로직은
-    record_mujoco.py와 완전히 동일 — 바깥 루프 구조만 다르다.
-    """
-
-    def __init__(self, args: argparse.Namespace, model, data, dual_cam: MujocoDualCamera, scene: str, variant: int):
-        self.args = args
-        self.model = model
-        self.data = data
-        self.dual_cam = dual_cam
-        self.scene = scene
-        self.variant = variant
-
-        self.dt = 1.0 / args.fps
-        self.substeps = max(1, int(round(self.dt / model.opt.timestep)))
-        self.mocap_bid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, MOCAP_BODY_NAME)
-        self.mocap_idx = model.body_mocapid[self.mocap_bid]
-        self.ee_bid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, EE_BODY_NAME)
-        self.rod_gid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, ROD_GEOM_NAME)
-        self.floor_gid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, FLOOR_GEOM_NAME)
-
-        mujoco.mj_resetData(model, data)
-        self.target_pos = MOCAP_HOME.copy()
-        self.R_cmd = np.eye(3)
-        data.mocap_pos[self.mocap_idx] = self.target_pos
-        data.mocap_quat[self.mocap_idx] = IDENTITY_QUAT
-        mujoco.mj_forward(model, data)
-
-        self.bead_points: list[BeadDrop] = []
-        self.prev_pose: np.ndarray | None = None
-        self.t0 = time.perf_counter()
-        self.max_steps = int(args.episode_seconds * args.fps) if args.episode_seconds else None
-        self.step = 0
-        self.last_wrist_frame: np.ndarray | None = None
-        self.last_overview_frame: np.ndarray | None = None
-        self.last_contact = False
-        self.last_trigger = 0.0
-
-    def tick(self, ctl: JoystickEEController | KeyboardEEController, dataset, force_end: bool, force_discard: bool) -> str | None:
-        """한 프레임 진행. 끝났으면 "saved"/"discarded", 아니면 None."""
-        if self.max_steps is not None and self.step >= self.max_steps:
-            return self._finish(dataset, discard=False)
-
-        ctl.poll()
-        vx, vy, vz = ctl.ee_velocity(
-            max_linear=self.args.max_linear_speed,
-            invert_x=self.args.invert_x, invert_y=self.args.invert_y, invert_z=self.args.invert_z,
-        )
-        self.target_pos = self.target_pos + np.array([vx, vy, vz]) * self.dt
-        self.target_pos[0] = float(np.clip(self.target_pos[0], *WORKSPACE_X))
-        self.target_pos[1] = float(np.clip(self.target_pos[1], *WORKSPACE_Y))
-        self.target_pos[2] = float(np.clip(self.target_pos[2], *WORKSPACE_Z))
-        min_target_z = MIN_TIP_Z + 0.05 * self.R_cmd[2, 2]  # record_mujoco.py와 동일 근사(ROD_HALF_LENGTH*2)
-        self.target_pos[2] = max(self.target_pos[2], min_target_z)
-        self.data.mocap_pos[self.mocap_idx] = self.target_pos
-
-        wx, wy, wz = ctl.rotation_rate(
-            max_angular=self.args.max_angular_speed, invert_x=self.args.invert_roll, invert_y=self.args.invert_pitch
-        )
-        if wx or wy or wz:
-            self.R_cmd = Rotation.from_rotvec(np.array([wx, wy, wz]) * self.dt).as_matrix() @ self.R_cmd
-        self.data.mocap_quat[self.mocap_idx] = _rotmat_to_mujoco_quat(self.R_cmd)
-        bit = ctl.gripper_bit()
-        self.last_trigger = bit
-
-        for _ in range(self.substeps):
-            mujoco.mj_step(self.model, self.data)
-
-        tip = _rod_tip_world(self.data, self.rod_gid)
-        contact_pos = _contact_pos(self.data, self.rod_gid, self.floor_gid)
-        self.last_contact = contact_pos is not None
-        if tip[2] < MIN_TIP_Z:
-            self.target_pos[2] += MIN_TIP_Z - tip[2]
-        if bit and self.step % BEAD_STRIDE == 0:
-            self.bead_points.append(BeadDrop(tip.copy()))
-        for b in self.bead_points:
-            b.step(self.dt)
-
-        self.last_wrist_frame = self.dual_cam.get_wrist_frame(self.data, self.bead_points)
-        self.last_overview_frame = self.dual_cam.get_overview_frame(self.data, self.bead_points)
-
-        pose = _ee_pose_xyzrotvec(self.data, self.ee_bid, self.rod_gid)
-        delta6 = np.zeros(6) if self.prev_pose is None else pose_delta(self.prev_pose, pose)
-        self.prev_pose = pose
-
-        if dataset is not None:
-            state9 = pose_to_state(pose)
-            obs_values = {**dict(zip(STATE_KEYS, state9.tolist())), "wrist": self.last_wrist_frame}
-            action_values = {**dict(zip(ACTION_KEYS[:6], delta6.tolist())), "gripper": bit}
-            obs_frame = build_dataset_frame(dataset.features, obs_values, prefix="observation")
-            action_frame = build_dataset_frame(dataset.features, action_values, prefix="action")
-            dataset.add_frame({**obs_frame, **action_frame, "task": self.args.task})
-
-        self.step += 1
-        if force_discard or ctl.discard_requested():
-            return self._finish(dataset, discard=True)
-        if force_end or ctl.episode_end_requested():
-            return self._finish(dataset, discard=False)
-        return None
-
-    def _finish(self, dataset, discard: bool) -> str:
-        if discard:
-            if dataset is not None:
-                dataset.clear_episode_buffer()
-            return "discarded"
-        if dataset is not None:
-            dataset.save_episode()
-        return "saved"
 
 
 def parse_args() -> argparse.Namespace:
@@ -289,7 +126,7 @@ def main() -> None:
         mujoco.mj_forward(model, data)
         dual_cam = MujocoDualCamera(model)
         ui["dual_cam"] = dual_cam
-        ui["ticker"] = _EpisodeTicker(args, model, data, dual_cam, scene, variant)
+        ui["ticker"] = EpisodeTicker(args, model, data, dual_cam, scene, variant)
         ui["force_end"] = False
         ui["force_discard"] = False
         dpg.configure_item("start_btn", enabled=False)
@@ -347,11 +184,17 @@ def main() -> None:
         sampler = BalancedSceneSampler(combos, counts_path)
     _refresh_chart()
 
-    ctl = build_ee_controller(args.input, recalibrate=args.recalibrate_joystick, grab_keyboard=args.grab_keyboard)
+    resolved_input = resolve_input_mode(args.input)
+    if resolved_input == "keyboard":
+        # 터미널 raw 모드로 stdin을 읽는 방식이라 Dear PyGui 창과도 무관하게 동작한다 — 이
+        # 도구를 실행한 터미널에 포커스가 있으면 된다.
+        ctl = KeyboardEEController()
+    else:
+        ctl = JoystickEEController(recalibrate=args.recalibrate_joystick)
 
     try:
         while dpg.is_dearpygui_running():
-            ticker: _EpisodeTicker | None = ui["ticker"]
+            ticker: EpisodeTicker | None = ui["ticker"]
             if ticker is not None:
                 result = ticker.tick(ctl, dataset, ui["force_end"], ui["force_discard"])
                 dpg.set_value("wrist_tex", _rgb_to_dpg_texture(ticker.last_wrist_frame))

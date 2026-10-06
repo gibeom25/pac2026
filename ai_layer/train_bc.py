@@ -101,6 +101,11 @@ def main() -> None:
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    # 2026-10-06: train_rl.py의 metrics.jsonl과 같은 패턴 — PyQt GUI 학습 탭이 콘솔 출력을
+    # regex로 긁는 대신 이 파일을 tail해서 loss 곡선을 그릴 수 있게.
+    metrics_path = out_dir / "metrics.jsonl"
+    metrics_file = metrics_path.open("a")
+
     step = 0
     last_loss = float("nan")
     for epoch in range(args.epochs):
@@ -115,6 +120,8 @@ def main() -> None:
             last_loss = loss.item()
             if step % args.log_every == 0:
                 print(f"epoch={epoch} step={step} loss={last_loss:.4f} {loss_dict}")
+                metrics_file.write(json.dumps({"epoch": epoch, "step": step, "loss": last_loss}) + "\n")
+                metrics_file.flush()
             step += 1
 
         if (epoch + 1) % args.save_every == 0 or epoch + 1 == args.epochs:
@@ -127,6 +134,7 @@ def main() -> None:
         out_dir, "last", policy, preprocessor, postprocessor,
         {"epoch": args.epochs - 1, "step": step, "loss": last_loss, "repo_id": args.repo_id, "xyz_only": args.xyz_only},
     )
+    metrics_file.close()
     print(f"done. checkpoints in {out_dir} (latest: {final})")
 
 
