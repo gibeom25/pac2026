@@ -104,7 +104,7 @@ source ~/anaconda3/etc/profile.d/conda.sh && conda activate pac2026
   PYTHONPATH=. python ai_layer/tools/check_ee.py --scene curve
   ```
   스틱을 움직여 EE가 기대한 방향(앞/뒤=x, 좌/우=y)으로 가는지, 슬라이더로 z가 오르내리는지,
-  베이스 버튼으로 회전이 도는지, 트리거로 비드가 찍히는지 확인. 방향이 반대면
+  햇스위치(roll/pitch)/트위스트(yaw)로 회전이 도는지, 트리거로 비드가 찍히는지 확인. 방향이 반대면
   `joystick_input.py`의 `ee_velocity()`/`rotation_rate()` 호출부 `--invert-*` 플래그로 고친다.
 - Logitech Extreme 3D Pro가 안 잡히면 `joystick_input.py`를 단독 실행해서 눌린 버튼 이름이
   출력되는지 확인 (버튼 매핑 디버그용).

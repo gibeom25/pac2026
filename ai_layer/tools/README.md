@@ -113,10 +113,13 @@ PYTHONPATH=. python ai_layer/tools/rl_env_smoke.py [--bc-checkpoint outputs/bc_a
 1, 임계값 없음). x/z 기본 부호는 실사용 확인 후 반전해뒀다 — 반대로 느껴지면
 `--invert-x/--invert-y/--invert-z`로 바로 뒤집을 것(`record_mujoco.py`/`check_ee.py` 둘 다 지원).
 
-**roll/pitch는 베이스 버튼, yaw는 트위스트 축으로 조절한다** (`rotation_rate()`, 2026-09-23
-최종 결정): `BTN_BASE`/`BTN_BASE2` = roll -/+, `BTN_BASE3`/`BTN_BASE4` = pitch -/+ (throttle처럼
-누르고 있는 동안만 그 방향으로 회전, 레이트 컨트롤) / `ABS_RZ`(트위스트) = yaw 각속도(연속값 —
-손목을 실제로 돌리는 축이라 버튼보다 자연스러움). `--max-angular-speed`(기본 1.0 rad/s)로 속도 조절.
+**roll/pitch는 햇스위치, yaw는 트위스트 축으로 조절한다** (`rotation_rate()`, 2026-10-06 변경):
+`ABS_HAT0X`/`ABS_HAT0Y`(스틱 위쪽 작은 8방향 POV 미니 조이스틱) = roll/pitch -/+ (throttle처럼
+기울이고 있는 동안만 그 방향으로 회전, 레이트 컨트롤 — 이전엔 베이스 버튼 `BTN_BASE`~`BTN_BASE4`를
+썼는데 버튼 두 쌍보다 미니 스틱 하나가 더 자연스럽다는 요청으로 바꿈) / `ABS_RZ`(트위스트) = yaw
+각속도(연속값 — 손목을 실제로 돌리는 축이라 버튼보다 자연스러움). `--max-angular-speed`(기본
+1.0 rad/s)로 속도 조절. 햇스위치 부호는 아직 실측 전이라 반대로 느껴지면 `--invert-x/--invert-y`로
+뒤집을 것.
 
 ```bash
 PYTHONPATH=. python ai_layer/tools/joystick_input.py [--list]
@@ -309,7 +312,7 @@ PYTHONPATH=. python ai_layer/tools/record_gui.py --dry-run --num-episodes 3   # 
 
 ## check_ee.py — 조이스틱 방향/회전/실패 확인 (2026-09-23, 기범)
 
-record_mujoco.py로 전체 녹화를 돌리지 않고 EE가 조이스틱을 잘 따라가는지, 베이스 버튼으로
+record_mujoco.py로 전체 녹화를 돌리지 않고 EE가 조이스틱을 잘 따라가는지, 햇스위치/트위스트로
 회전이 도는지, 트리거로 비드가 찍히는지, 막대가 바닥에 닿으면 "실패"가 뜨는지 빠르게 확인.
 (예전 check_gripper.py — 로봇 몸통이 사라지면서 리더 그리퍼 방향 확인이라는 원래 목적이
 없어져 조이스틱/EE 확인 도구로 대체함.)
@@ -319,7 +322,7 @@ PYTHONPATH=. python ai_layer/tools/check_ee.py --scene dashed
 ```
 
 스틱을 움직여서 EE가 기대한 방향(앞/뒤=x, 좌/우=y)으로 가는지, 슬라이더로 z가 오르내리는지,
-베이스 버튼으로 roll/pitch/yaw가 도는지, 트리거를 누르면 높이 상관없이 비드가 찍히는지, 막대를
+햇스위치/트위스트로 roll/pitch/yaw가 도는지, 트리거를 누르면 높이 상관없이 비드가 찍히는지, 막대를
 일부러 바닥에 대면 "실패(접촉!)"이 뜨는지 확인한다(2026-10-06: 이 "실패" 표시는 check_ee.py
 전용 진단이다 — record_mujoco.py/record_gui.py는 접촉 시 더 이상 실패 처리하지 않고 높이로
 막는다, 위 record_mujoco.py 절 참고). 방향이 반대면 `joystick_input.py`의

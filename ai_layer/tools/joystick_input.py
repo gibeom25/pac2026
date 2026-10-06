@@ -11,15 +11,19 @@ evdev.InputDevice.capabilities()로 직접 읽음 — 추측 아님):
   ABS_Y (0~1023, center 508)       전후 스틱 -> EE x 속도 (스틱 전방 = +x)
   ABS_THROTTLE (0~255, 절대위치)    슬라이더 -> EE z 속도 (자체 복원 없음 — 중앙 근처서 손 떼면 정지)
   ABS_RZ (0~255, center ~128)      트위스트 -> yaw 각속도
-  ABS_HAT0X/ABS_HAT0Y (-1/0/1)     POV 햇스위치, v1은 미사용
+  ABS_HAT0X/ABS_HAT0Y (-1/0/1)     POV 햇스위치(스틱 위쪽 미니 조이스틱) -> roll/pitch 각속도
   BTN_TRIGGER(288)                 누르는 동안 그리퍼/도구 신호 = 1 (임계값 없이 즉시 반영)
-  BTN_BASE/BTN_BASE2(294/295)      누르는 동안 roll -/+ 각속도
-  BTN_BASE3/BTN_BASE4(296/297)     누르는 동안 pitch -/+ 각속도
+  BTN_BASE/BTN_BASE2(294/295)      더 이상 안 씀(2026-10-06 이전엔 roll -/+였음)
+  BTN_BASE3/BTN_BASE4(296/297)     더 이상 안 씀(2026-10-06 이전엔 pitch -/+였음)
 
 2026-09-23(2차): roll/pitch는 베이스 버튼(레이트 컨트롤 — 누르고 있는 동안만 회전, throttle과
 같은 방식)으로, yaw는 트위스트 축(연속값 — 손목을 실제로 돌리는 축이라 버튼 두 개보다 자연스러움,
 5차 변경)으로 조절한다(rotation_rate()). mocap_target이 위치+전체 회전을 같이 명령하고, ee_body는
 weld+접촉 반발력으로 따라간다.
+
+2026-10-06(6차): roll/pitch를 베이스 버튼 대신 햇스위치로 바꿨다 — 엄지로 미니 스틱 하나
+누르는 게 버튼 두 쌍을 누르는 것보다 자연스럽다는 요청. 레이트 컨트롤인 건 동일(기울인 동안만
+회전).
 
 방향(좌우/전후 부호)은 실제로 스틱을 움직여보고 뷰어에서 확인해야 한다 — 반대면 부호만 뒤집을 것
 (ee_velocity()의 vx/vy 계산 부분).
@@ -312,24 +316,23 @@ class JoystickEEController:
     def rotation_rate(
         self, max_angular: float = 1.0, invert_x: bool = False, invert_y: bool = False, invert_z: bool = False
     ) -> tuple[float, float, float]:
-        """roll/pitch(베이스 버튼) + yaw(트위스트 축) -> world-frame 각속도 (wx, wy, wz) [rad/s].
+        """roll/pitch(햇스위치) + yaw(트위스트 축) -> world-frame 각속도 (wx, wy, wz) [rad/s].
 
-        BTN_BASE/BASE2 = roll -/+, BASE3/BASE4 = pitch -/+ (레이트 컨트롤, 누르는 동안만).
+        2026-10-06: roll/pitch를 베이스 버튼(BTN_BASE~4) 대신 **햇스위치**(스틱 위쪽에 달린
+        작은 8방향 POV 미니 조이스틱, ABS_HAT0X/ABS_HAT0Y)로 바꿨다 — 버튼 두 개씩 눌러야
+        하는 것보다 엄지로 미니 스틱 하나를 꾹 누르는 게 더 자연스럽다는 요청. 햇스위치는
+        디지털(-1/0/1)이라 버튼과 마찬가지로 레이트 컨트롤(누르는 동안만)로 쓴다.
         yaw는 2026-09-23(5차)부터 BASE5/BASE6 대신 트위스트(ABS_RZ, 연속값)로 바꿨다 —
         "yaw는 조이스틱 회전으로 해도 될듯"(스틱 손목을 실제로 돌리는 축이라 연속 제어가
         버튼 두 개보다 자연스러움). kinematics.apply_pose_delta와 같은 world-frame 왼쪽곱
         합성 규약을 쓴다 — record_mujoco.py가 Rotation.from_rotvec(w*dt) @ R_cmd 로 적분한다.
 
         2026-09-23: 실사용 확인 결과 yaw(트위스트) 기본 부호가 반대라 반전. roll/pitch는 아직
-        애매할 수 있어 --invert-x/--invert-y로 열어둠(ee_velocity()의 invert_x/y와는 별개 인자).
+        애매할 수 있어 --invert-x/--invert-y로 열어둠(ee_velocity()의 invert_x/y와는 별개 인자) —
+        햇스위치로 바꾸면서 부호를 다시 확인 못 했으니(실측 전) 반대로 느껴지면 그걸로 뒤집을 것.
         """
-
-        def axis(neg_code: int, pos_code: int) -> float:
-            b = self.state.buttons
-            return (1.0 if b.get(pos_code, False) else 0.0) - (1.0 if b.get(neg_code, False) else 0.0)
-
-        wx = axis(ecodes.BTN_BASE, ecodes.BTN_BASE2) * max_angular
-        wy = axis(ecodes.BTN_BASE3, ecodes.BTN_BASE4) * max_angular
+        wx = float(self.state.hat_x) * max_angular  # roll -/+ (햇스위치 좌우)
+        wy = float(self.state.hat_y) * max_angular  # pitch -/+ (햇스위치 상하)
         wz = -self.state.twist * max_angular  # 기본 부호 반전 확인됨
         if invert_x:
             wx = -wx
