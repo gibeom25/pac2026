@@ -451,7 +451,11 @@ def _run_one_episode(args: argparse.Namespace, ctl: JoystickEEController | Keybo
             invert_y=args.invert_y,
             invert_z=args.invert_z,
         )
-        target_pos = target_pos + np.array([vx, vy, vz]) * dt
+        # 2026-10-06: 이동 방향을 월드 고정이 아니라 EE(손목) 자신의 현재 자세 기준으로 바꿨다
+        # — W/S/A/D/R/F는 이제 "EE가 보는 앞/오른쪽/위"를 뜻하고, 도구를 돌린 뒤에도(회전 중에도
+        # 매 프레임 갱신되는 R_cmd를 그대로 쓰므로) "앞으로"가 계속 도구 기준 앞쪽을 의미한다.
+        # R_cmd가 항등(회전 안 한 기본 자세)이면 기존과 완전히 동일(월드축 그대로).
+        target_pos = target_pos + R_cmd @ (np.array([vx, vy, vz]) * dt)
         target_pos[0] = float(np.clip(target_pos[0], *WORKSPACE_X))
         target_pos[1] = float(np.clip(target_pos[1], *WORKSPACE_Y))
         target_pos[2] = float(np.clip(target_pos[2], *WORKSPACE_Z))

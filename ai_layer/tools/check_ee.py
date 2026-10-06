@@ -118,7 +118,9 @@ def _run(
         vx, vy, vz = ctl.ee_velocity(
             max_linear=max_linear_speed, invert_x=invert_x, invert_y=invert_y, invert_z=invert_z
         )
-        target_pos = target_pos + np.array([vx, vy, vz]) * dt
+        # 2026-10-06: 이동 방향을 월드 고정이 아니라 EE(손목) 자신의 현재 자세 기준으로 바꿨다
+        # — record_mujoco.py와 동일한 이유/방식(R_cmd가 항등이면 기존과 완전히 동일).
+        target_pos = target_pos + R_cmd @ (np.array([vx, vy, vz]) * dt)
         target_pos[0] = float(np.clip(target_pos[0], *WORKSPACE_X))
         target_pos[1] = float(np.clip(target_pos[1], *WORKSPACE_Y))
         target_pos[2] = float(np.clip(target_pos[2], *WORKSPACE_Z))

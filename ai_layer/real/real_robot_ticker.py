@@ -9,7 +9,7 @@ CLI 쪽 틱 호출 코드는 시뮬 EpisodeTicker와 이 RealRobotEpisodeTicker 
 
 **조이스틱/키보드 컨트롤러는 손댈 필요가 없다** — JoystickEEController/KeyboardEEController/
 QtKeyboardEEController는 애초에 "EE 속도(m/s, rad/s)"만 돌려주는 하드웨어 중립 인터페이스라서
-시뮬 mocap이든 실로봇 IK든 똑같이 넣어주면 된다(ee_velocity()/rotation_rate()/gripper_bit()).
+시뮬 mocap이든 실로봇이든 똑같이 넣어주면 된다(ee_velocity()/rotation_rate()/gripper_bit()).
 
 **데이터셋 스키마는 시뮬과 완전히 동일하다**(2026-10-06 결정 — BC/RL 학습 파이프라인을 안
 바꾸기 위해) — record_mujoco.py의 STATE_KEYS/ACTION_KEYS/CAMERA_HW를 그대로 쓰고, "wrist"
@@ -17,14 +17,22 @@ QtKeyboardEEController는 애초에 "EE 속도(m/s, rad/s)"만 돌려주는 하�
 없으므로 bead_points는 항상 빈 리스트, last_contact는 항상 False로 둔다(데이터셋 필드 자체에
 비드/접촉은 안 들어가므로 영향 없음 — 그냥 GUI 상태 표시용 필드).
 
-**IK**: ai_layer/kinematics.py의 build_arm_kinematics()(PAC_Supermoon URDF, 5관절 — yaw 없음)를
-쓴다. 매 틱 "현재 관절각 근처에서" 풀어야 해가 널뛰지 않아서, 직전 틱의 해를 다음 틱의 초기
-추정치로 재사용한다(placo 솔버가 current_joint_pos를 초기값으로 받음).
+**2026-10-06(2차) — 제어 방식 변경**: 처음엔 이 ticker가 직접 IK를 풀어서 관절각을
+`SOFollower.send_action()`으로 보냈는데, "실로봇 연결시 무조건 EEF delta 기준으로 전달하게
+하고 제어단은 나중에 구현"이라는 결정으로 바꿨다 — ai_layer/kinematics.py가 이미 전제하고
+있던 팀 규약(모듈 docstring: "제어 규약: 송지수 ActionChunk — 직전 스텝 대비 증분 EEF-delta",
+zero_yaw()가 있는 이유도 실제 제어단이 5DOF EEF-delta만 받기 때문)과 일치시킨 것이다. 그래서
+이 ticker는 더 이상 로컬 IK로 관절을 직접 구동하지 않는다 — 조이스틱/키보드 입력을 적분해
+"이번 틱에 원하는 EEF-delta"만 계산해서 `_send_eef_delta()`에 넘기고, 그 함수는 지금은
+**아무 것도 안 하는 자리표시자**다(제어단이 아직 없음 — TODO, 연결되면 여기서 실제로 전송).
+즉 **지금 이 코드로는 실로봇이 실제로 움직이지 않는다** — 데이터 수집 파이프라인(관측 읽기 +
+델타 계산 + 데이터셋 기록)의 틀만 미리 맞춰둔 것이고, 모터 구동은 제어단이 붙은 뒤의 일이다.
 
-**안전장치**: SOFollowerRobotConfig의 `max_relative_target`(한 번의 send_action당 관절 이동량
-상한, lerobot 자체 안전장치)을 반드시 쓴다 — 실제 하드웨어라 IK가 튀는 해를 내도 모터가
-한번에 크게 안 튄다. 그래도 **이 코드는 실제 로봇으로 검증 못 했다**(이 환경엔 하드웨어가
-없음) — 처음 돌릴 땐 낮은 속도로 충분히 떨어져서 지켜볼 것.
+관측(카메라 프레임, 현재 관절각)은 계속 `robot.get_observation()`으로 읽는다 — 이건 "제어"가
+아니라 센서 읽기라 그대로 둔다. 현재 pose는 FK(`kin.forward_kinematics`)로 구하고, 이걸
+기준으로 "이번 틱 목표까지의 델타"를 계산해 액션으로 기록한다 — 실제로 로봇이 안 움직이므로
+관측 pose 자체는 틱마다 거의 안 바뀌고(제어단 연결 전까지는), 액션(델타)만 사용자의 조작
+의도를 담는다. 제어단이 붙으면 관측도 매 틱 실제로 움직인 결과를 반영하게 된다.
 """
 
 from __future__ import annotations
@@ -40,16 +48,15 @@ from lerobot.utils.rotation import Rotation
 from ai_layer.kinematics import JOINT_NAMES, pose_delta, pose_to_state, pose_to_xyzrotvec
 from ai_layer.tools.joystick_input import JoystickEEController
 from ai_layer.tools.keyboard_input import KeyboardEEController
-from ai_layer.tools.record_mujoco import (
-    ACTION_KEYS,
-    MIN_TIP_Z,
-    STATE_KEYS,
-    WORKSPACE_X,
-    WORKSPACE_Y,
-    WORKSPACE_Z,
-)
+from ai_layer.tools.record_mujoco import ACTION_KEYS, STATE_KEYS
 
-ARM_JOINT_NAMES = JOINT_NAMES[:5]  # gripper 제외 5관절 (build_arm_kinematics와 동일 순서)
+# 2026-10-06: WORKSPACE_X/Y/Z(작업공간 클리핑)와 MIN_TIP_Z(바닥/작업대 높이 제한)는 일부러 안
+# 가져왔다 — record_mujoco.py에 있는 그 값들은 시뮬 EE-rig 기준으로 잡은 것이라 실제 SO-101의
+# 물리적 도달 범위/작업대 높이와 안 맞을 수 있다("적용 못하는 constraint는 알아서 꺼지게"
+# 요청). 틀린 숫자로 "제한 걸려 있는 것처럼" 보이는 게 더 위험하다 — 진짜 안전 제한(실제
+# 도달 범위, 테이블 높이)은 나중에 붙는 제어단이 실제 로봇 기준으로 걸어야 한다.
+
+ARM_JOINT_NAMES = JOINT_NAMES[:5]  # gripper 제외 5관절 (FK 입력 순서, build_arm_kinematics와 동일)
 GRIPPER_JOINT_NAME = JOINT_NAMES[5]
 assert GRIPPER_JOINT_NAME == "gripper"
 
@@ -88,15 +95,12 @@ class RealRobotEpisodeTicker:
         self.bead_points: list = []  # 실로봇엔 비드 시뮬레이션 없음 — 인터페이스 호환용 항상 빈 리스트
         self.last_contact = False  # 실로봇엔 접촉 센서 없음 — 인터페이스 호환용 항상 False
         self.last_trigger = 0.0
-        self.prev_pose: np.ndarray | None = None
 
         obs = robot.get_observation()
         arm_deg = np.array([obs[f"{j}.pos"] for j in ARM_JOINT_NAMES], dtype=float)
-        self._last_arm_deg = arm_deg  # IK 초기 추정치로 매 틱 재사용 — 해가 연속적으로 나오게
-        self.current_gripper_pos = float(obs[f"{GRIPPER_JOINT_NAME}.pos"])
-
         T0 = kin.forward_kinematics(arm_deg)
         pose0 = pose_to_xyzrotvec(T0)
+        self.current_pose = pose0  # 매 틱 관측(FK)로 갱신 — 액션(델타)의 기준점
         self.target_pos = pose0[:3].copy()
         self.R_cmd = Rotation.from_rotvec(pose0[3:6]).as_matrix()
         self.last_tip = self.target_pos.copy()
@@ -119,45 +123,35 @@ class RealRobotEpisodeTicker:
             max_linear=self.args.max_linear_speed,
             invert_x=self.args.invert_x, invert_y=self.args.invert_y, invert_z=self.args.invert_z,
         )
-        self.target_pos = self.target_pos + np.array([vx, vy, vz]) * self.dt
-        self.target_pos[0] = float(np.clip(self.target_pos[0], *WORKSPACE_X))
-        self.target_pos[1] = float(np.clip(self.target_pos[1], *WORKSPACE_Y))
-        self.target_pos[2] = float(np.clip(self.target_pos[2], *WORKSPACE_Z))
-        self.target_pos[2] = max(self.target_pos[2], MIN_TIP_Z)  # 실제 작업대 충돌 방지(안전)
+        # 이동 방향은 EE 자신의 현재 자세(R_cmd) 기준 — 시뮬(episode_ticker.py)과 동일 규약.
+        # 작업공간 클리핑/바닥 높이 제한은 일부러 안 건다(모듈 docstring 상단 참고) — 시뮬
+        # 기준 숫자를 실제 로봇에 잘못 적용하느니 아예 안 거는 쪽이 안전하다.
+        self.target_pos = self.target_pos + self.R_cmd @ (np.array([vx, vy, vz]) * self.dt)
 
         wx, wy, wz = ctl.rotation_rate(
             max_angular=self.args.max_angular_speed, invert_x=self.args.invert_roll, invert_y=self.args.invert_pitch
         )
         if wx or wy or wz:
             self.R_cmd = Rotation.from_rotvec(np.array([wx, wy, wz]) * self.dt).as_matrix() @ self.R_cmd
-        # yaw(wz)는 넣어도 IK가 5DOF라 못 푼다 — ai_layer/kinematics.py의 zero_yaw()와 같은 이유
-        # (PAC_Supermoon 실로봇 URDF 기준). position_weight 위주로 풀리며 yaw는 자연히 무시됨.
+        # yaw(wz)는 넣어도 실로봇 제어단이 5DOF(XYZ+roll/pitch)만 받는다 — ai_layer/kinematics.py의
+        # zero_yaw()와 같은 이유(PAC_Supermoon 실로봇 URDF 기준, 실제 관절이 yaw를 못 냄).
 
         bit = ctl.gripper_bit()
         self.last_trigger = bit
-        self.current_gripper_pos = 100.0 if bit else 0.0  # 단순 열림/닫힘(0~100)
 
-        target_T = np.eye(4)
-        target_T[:3, :3] = self.R_cmd
-        target_T[:3, 3] = self.target_pos
-        arm_deg = self.kin.inverse_kinematics(self._last_arm_deg, target_T)
-        self._last_arm_deg = arm_deg
+        target_pose = np.concatenate([self.target_pos, Rotation.from_matrix(self.R_cmd).as_rotvec()])
+        delta6 = pose_delta(self.current_pose, target_pose)  # "이번 틱에 원하는" EEF-delta
+        self._send_eef_delta(delta6, bit)
 
-        action = {f"{name}.pos": float(val) for name, val in zip(ARM_JOINT_NAMES, arm_deg)}
-        action[f"{GRIPPER_JOINT_NAME}.pos"] = self.current_gripper_pos
-        self.robot.send_action(action)  # max_relative_target(설정돼 있으면)이 여기서 과도한 이동을 막는다
-
-        obs = self.robot.get_observation()
+        obs = self.robot.get_observation()  # 센서 읽기 — 제어가 아니므로 그대로 둠
         self.last_wrist_frame = obs.get("wrist")
         self.last_overview_frame = obs.get("overview", self.last_wrist_frame)
 
         actual_arm_deg = np.array([obs[f"{j}.pos"] for j in ARM_JOINT_NAMES], dtype=float)
         T_actual = self.kin.forward_kinematics(actual_arm_deg)
-        pose = pose_to_xyzrotvec(T_actual)  # 명령이 아니라 실측 — 센서 노이즈/지연까지 그대로 기록됨
+        pose = pose_to_xyzrotvec(T_actual)  # 실측 pose — 제어단이 붙기 전까진 거의 안 바뀜(기대된 동작)
+        self.current_pose = pose
         self.last_tip = pose[:3].copy()
-
-        delta6 = np.zeros(6) if self.prev_pose is None else pose_delta(self.prev_pose, pose)
-        self.prev_pose = pose
 
         if dataset is not None:
             state9 = pose_to_state(pose)
@@ -173,6 +167,12 @@ class RealRobotEpisodeTicker:
         if force_end or ctl.episode_end_requested():
             return self._finish(dataset, discard=False)
         return None
+
+    def _send_eef_delta(self, delta6: np.ndarray, gripper_bit: float) -> None:
+        """실로봇 제어단(모터 구동)에 EEF-delta를 전달하는 자리 — 2026-10-06: 제어단이 아직
+        없어서(나중에 구현 예정) 지금은 아무 것도 안 한다. 제어단이 붙으면 여기서 실제 전송
+        (예: control_bridge의 ActionChunk 프로토콜)하면 된다 — 그 전까지는 로봇이 실제로
+        움직이지 않고, 조작 의도(델타)만 데이터셋에 기록된다."""
 
     def _finish(self, dataset, discard: bool) -> str:
         if discard:
