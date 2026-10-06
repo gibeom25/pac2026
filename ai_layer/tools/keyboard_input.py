@@ -52,6 +52,7 @@ _KEY_YAW_POS = ecodes.KEY_V
 _KEY_TRIGGER = ecodes.KEY_SPACE
 _KEY_END_EPISODE = ecodes.KEY_ENTER
 _KEY_DISCARD = ecodes.KEY_BACKSPACE
+_KEY_RELEASE_GRAB = ecodes.KEY_ESC  # grab 중 비상 탈출(아래 KeyboardEEController 참고)
 
 _TRACKED_KEYS = (
     _KEY_X_POS, _KEY_X_NEG, _KEY_Y_POS, _KEY_Y_NEG, _KEY_Z_POS, _KEY_Z_NEG,
@@ -87,17 +88,46 @@ class KeyboardState:
     held: set = field(default_factory=set)
 
 
-class KeyboardEEController:
-    """JoystickEEController와 동일한 공개 인터페이스 — 드롭인 대체용."""
+class KeyboardGrabReleased(Exception):
+    """grab 중 ESC로 비상 탈출했을 때 — 호출 측이 KeyboardInterrupt처럼 받아서 정리하면 된다."""
 
-    def __init__(self, device_path: str | None = None):
+
+class KeyboardEEController:
+    """JoystickEEController와 동일한 공개 인터페이스 — 드롭인 대체용.
+
+    2026-10-06(기범 지적 — "노트북 키보드인데"): 외장 키보드가 아니라 노트북 본체 키보드처럼
+    "조종용으로 따로 둘 수 없는" 키보드가 흔하다. grab 안 하면 WASD/ENTER/BACKSPACE 입력이
+    evdev 레벨에서 시스템 전체로도(지금 포커스된 터미널/에디터 등) 그대로 전달된다 — 특히
+    ENTER가 터미널에 반쯤 쳐둔 명령을 실행시켜버릴 수 있어 위험. `grab=True`면
+    `dev.grab()`으로 커널 레벨에서 이 장치를 독점해서 다른 창엔 전혀 안 들어가게 막는다 — 대신
+    먹통되면 그 키보드로 터미널에 Ctrl+C조차 안 먹힐 수 있어서(같은 물리 키보드가 완전히
+    독점됨), ESC를 누르면 즉시 grab을 풀고 `KeyboardGrabReleased`를 던지는 비상 탈출을 넣었다.
+    기본값은 **grab 안 함**(안전 우선) — 조종 중 다른 창을 건드리지 않게 주의하거나,
+    `grab=True`로 명시적으로 켤 것.
+    """
+
+    def __init__(self, device_path: str | None = None, grab: bool = False):
         path = device_path or find_keyboard()
         self.dev = evdev.InputDevice(path)
+        self.grabbed = False
         print(f"[keyboard] connected: {self.dev.path} ({self.dev.name})")
         print(
             "[keyboard] 조이스틱 없을 때 대체 입력 — WASD(xy) R/F(z) Q/E(roll) Z/X(pitch) "
             "C/V(yaw) SPACE(트리거) ENTER(저장종료) BACKSPACE(폐기재시도)"
         )
+        if grab:
+            self.dev.grab()
+            self.grabbed = True
+            print(
+                "[keyboard] ⚠️  이 키보드를 독점합니다 — 다른 창엔 입력이 전혀 안 들어갑니다. "
+                "먹통되면 ESC를 눌러서 즉시 풀고 빠져나올 것."
+            )
+        else:
+            print(
+                "[keyboard] ⚠️  독점(grab)하지 않았습니다 — 지금 누르는 키(특히 ENTER)가 포커스된 "
+                "다른 창(터미널 등)에도 같이 들어갑니다. 노트북 키보드처럼 조종용을 따로 못 두면 "
+                "조종 중엔 다른 창을 건드리지 말 것. 완전히 독점하려면 --grab-keyboard."
+            )
         self.state = KeyboardState()
         self._edge_prev: dict[int, bool] = {}
 
@@ -123,6 +153,11 @@ class KeyboardEEController:
                 if e.type == ecodes.EV_SYN and e.code == ecodes.SYN_DROPPED:
                     self._resync_from_hardware()
                     continue
+                if e.type == ecodes.EV_KEY and e.code == _KEY_RELEASE_GRAB and e.value == 1 and self.grabbed:
+                    self.dev.ungrab()
+                    self.grabbed = False
+                    print("\n[keyboard] ESC — grab 해제하고 빠져나갑니다.")
+                    raise KeyboardGrabReleased()
                 if e.type == ecodes.EV_KEY and e.code in _TRACKED_KEYS:
                     if e.value == 0:
                         self.state.held.discard(e.code)
@@ -181,12 +216,17 @@ class KeyboardEEController:
         return self._rising_edge(_KEY_DISCARD)
 
     def close(self) -> None:
+        if self.grabbed:
+            try:
+                self.dev.ungrab()
+            except OSError:
+                pass  # 이미 풀렸거나 장치가 사라짐 — close()는 항상 조용히 성공해야 함
         self.dev.close()
 
 
-def _live_diagnostic() -> None:
-    ctl = KeyboardEEController()
-    print("[keyboard] 키를 눌러보세요. Ctrl+C로 종료.\n")
+def _live_diagnostic(grab: bool = False) -> None:
+    ctl = KeyboardEEController(grab=grab)
+    print("[keyboard] 키를 눌러보세요. Ctrl+C로 종료" + (", ESC로 grab 해제." if grab else ".") + "\n")
     try:
         while True:
             ctl.poll()
@@ -200,7 +240,7 @@ def _live_diagnostic() -> None:
                 flush=True,
             )
             time.sleep(1 / 30)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, KeyboardGrabReleased):
         print("\n[keyboard] 종료.")
     finally:
         ctl.close()
@@ -209,8 +249,12 @@ def _live_diagnostic() -> None:
 if __name__ == "__main__":
     p = argparse.ArgumentParser(description="키보드 연결/매핑 진단 도구 (조이스틱 대체 입력).")
     p.add_argument("--list", action="store_true", help="연결된 입력 장치 목록만 출력하고 종료")
+    p.add_argument(
+        "--grab", action="store_true",
+        help="이 키보드를 독점(다른 창엔 입력 안 감) — 먹통되면 ESC로 즉시 해제",
+    )
     args = p.parse_args()
     if args.list:
         list_keyboards()
     else:
-        _live_diagnostic()
+        _live_diagnostic(grab=args.grab)

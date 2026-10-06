@@ -598,7 +598,7 @@ def main() -> None:
     args = parse_args()
 
     if args.headless:
-        ctl = build_ee_controller(args.input, recalibrate=args.recalibrate_joystick)
+        ctl = build_ee_controller(args.input, recalibrate=args.recalibrate_joystick, grab_keyboard=args.grab_keyboard)
     else:
         # 뷰어를 조이스틱 연결/보정보다 먼저 띄운다 — 2026-10-06: 저장된 스로틀 보정값이 없으면
         # JoystickEEController() 생성자 안에서 터미널 input()으로 멈추는데, 그 시점엔 아직 MuJoCo
@@ -612,7 +612,7 @@ def main() -> None:
         mujoco.mj_forward(boot_model, boot_data)
         with mujoco.viewer.launch_passive(boot_model, boot_data) as boot_viewer:
             boot_viewer.sync()
-            ctl = build_ee_controller(args.input, recalibrate=args.recalibrate_joystick)
+            ctl = build_ee_controller(args.input, recalibrate=args.recalibrate_joystick, grab_keyboard=args.grab_keyboard)
 
     if args.dry_run:
         print("[record] --dry-run: 저장은 전부 건너뛴다 (조작/씬 전환/버튼/뷰어는 실제 수집과 동일).")

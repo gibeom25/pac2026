@@ -187,7 +187,7 @@ def main() -> None:
     ctl = None
     try:
         if args.headless:
-            ctl = build_ee_controller(args.input, recalibrate=args.recalibrate_joystick)
+            ctl = build_ee_controller(args.input, recalibrate=args.recalibrate_joystick, grab_keyboard=args.grab_keyboard)
             _run(
                 ctl, model, data, viewer=None,
                 max_linear_speed=args.max_linear_speed, max_angular_speed=args.max_angular_speed,
@@ -199,7 +199,7 @@ def main() -> None:
             # 그 전에 창을 열어둬야 "창이 하나도 없이 멈춰서 헤드리스처럼 보이는" 오해가 안 생긴다.
             with mujoco.viewer.launch_passive(model, data) as viewer:
                 viewer.sync()
-                ctl = build_ee_controller(args.input, recalibrate=args.recalibrate_joystick)
+                ctl = build_ee_controller(args.input, recalibrate=args.recalibrate_joystick, grab_keyboard=args.grab_keyboard)
                 _run(
                     ctl, model, data, viewer,
                     args.max_linear_speed, args.max_angular_speed, args.hz, **invert_kwargs,

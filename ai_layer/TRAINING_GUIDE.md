@@ -60,7 +60,10 @@ nvidia-smi   # GPU 인식 확인 (torch.cuda.is_available()도 True여야 함)
 
 **조이스틱이 없으면** 모든 녹화/점검 도구가 `--input auto`(기본값)로 자동으로 키보드 입력으로
 전환된다(WASD+RF 이동, QE/ZX/CV 회전, SPACE 트리거, ENTER 저장, BACKSPACE 폐기 — 전체 키 배치는
-tools/README.md의 keyboard_input.py 절). `--input keyboard`로 강제 지정도 가능.
+tools/README.md의 keyboard_input.py 절). `--input keyboard`로 강제 지정도 가능. **노트북
+키보드처럼 조종용을 따로 못 두면** `--grab-keyboard`를 같이 줄 것 — 안 주면 WASD/ENTER가
+지금 포커스된 다른 창(터미널 등)에도 같이 들어간다(ENTER가 터미널 명령을 실행시킬 수도 있어
+위험). grab 중 먹통되면 ESC로 즉시 해제됨.
 
 **스로틀(z축) 영점 보정**: 처음 조이스틱을 쓰는 녹화 도구를 실행하면 "슬라이더를 중립 위치에
 놓고 Enter"를 한 번 물어보고 `~/.config/pac2026/joystick_calibration.json`에 저장한다 — 그 뒤로는

@@ -347,7 +347,7 @@ def main() -> None:
         sampler = BalancedSceneSampler(combos, counts_path)
     _refresh_chart()
 
-    ctl = build_ee_controller(args.input, recalibrate=args.recalibrate_joystick)
+    ctl = build_ee_controller(args.input, recalibrate=args.recalibrate_joystick, grab_keyboard=args.grab_keyboard)
 
     try:
         while dpg.is_dearpygui_running():

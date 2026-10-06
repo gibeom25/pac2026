@@ -149,12 +149,20 @@ gripper_bit/rotation_rate/episode_end_requested/discard_requested/close)를 구�
 | 에피소드 폐기+재시도 (BTN_THUMB2) | BACKSPACE |
 
 ```bash
-PYTHONPATH=. python ai_layer/tools/keyboard_input.py [--list]   # 단독 진단 모드
-PYTHONPATH=. python ai_layer/tools/record_mujoco.py --input keyboard --dry-run --num-episodes 1
+PYTHONPATH=. python ai_layer/tools/keyboard_input.py [--list] [--grab]   # 단독 진단 모드
+PYTHONPATH=. python ai_layer/tools/record_mujoco.py --input keyboard --grab-keyboard --dry-run --num-episodes 1
 ```
 
 joystick_input.py와 같은 evdev 기반이라 키보드도 보통 `input` 그룹 권한이 필요하다(0단계 참고).
 `--recalibrate-joystick`은 키보드 입력일 때는 그냥 무시된다(스로틀 자체가 없으므로).
+
+**노트북 키보드처럼 조종용을 따로 못 둘 때(2026-10-06 지적)**: grab 안 하면 WASD/ENTER 같은
+입력이 evdev 레벨에서 지금 포커스된 다른 창(터미널 등)에도 그대로 들어간다 — ENTER가 터미널에
+반쯤 쳐둔 명령을 실행시켜버릴 수 있어 위험하다. `--grab-keyboard`를 주면 그 키보드를 커널
+레벨로 독점해서(`dev.grab()`) 다른 창엔 전혀 안 들어가게 막는다 — 기본값은 **off**(안전
+우선, 그냥 두면 조종 중 다른 창을 건드리지 않게만 주의). 독점 중 먹통되면 **ESC**를 누르면
+즉시 grab을 풀고 빠져나온다(`KeyboardGrabReleased`) — 같은 물리 키보드가 완전히 독점되면
+Ctrl+C조차 터미널에 안 먹힐 수 있어서 넣어둔 비상 탈출.
 
 ## record_mujoco.py — 조이스틱 -> MuJoCo EE 리그 미러링 데이터 수집 (2026-09-22, 기범 / 2026-09-23 조이스틱 전환)
 
