@@ -21,6 +21,12 @@ so101_act_bc.py/so101_bc_dataset.py의 실로봇 경로와 동일 결정 — "�
 중요할 수 있어서 — 남겨둔다). observation.state(9,)의 rot6d는 그대로 6DOF를 담는다(관측에는
 yaw도 들어감 — 녹화 당시 실제 궤적을 복원 가능하게). 녹화 원본(raw, LeRobotDataset)에는 yaw가
 안 지워진 채 그대로 남아 다른 로봇/후속 분석에 쓸 수 있다.
+
+2026-10-06(2차): `xyz_only=True`면 roll/pitch까지 마저 0으로 마스킹해서(drx/dry/drz 전부) 4DOF
+(xyz+그리퍼)짜리 가벼운 MVP를 먼저 학습할 수 있게 했다 — "녹화는 지금처럼 6DOF 다 하고 학습
+때만 끄자"는 결정(기범): 녹화(조이스틱 티칭)는 되돌릴 수 없는 비용이라 지금 깎으면 나중에 rpy가
+필요할 때 데이터를 통째로 다시 모아야 하지만, 학습 타깃 마스킹은 플래그 하나라 공짜로 되돌릴 수
+있다. 그래서 녹화 쪽(record_mujoco.py)은 전혀 안 건드리고 여기서만 선택적으로 더 깎는다.
 """
 
 from __future__ import annotations
@@ -60,7 +66,9 @@ class SO101EEDataset(Dataset):
         chunk_size: int = CHUNK_SIZE,
         dt_ai_sec: float = DT_AI_SEC,
         precompute_seam: bool = True,
+        xyz_only: bool = False,
     ):
+        self.xyz_only = xyz_only
         delta_timestamps = {
             ACTION: [(k + 1) * dt_ai_sec for k in range(chunk_size)],
         }
@@ -156,7 +164,12 @@ class SO101EEDataset(Dataset):
             seam_feat = self._seam_features(item[self.camera_key])
 
         action = item[ACTION].reshape(self.chunk_size, -1).float()
-        if ZERO_YAW:
+        if self.xyz_only:
+            # roll/pitch/yaw 전부 마스킹 — 4DOF(xyz+그리퍼) MVP용. ZERO_YAW보다 우선한다(yaw도
+            # 어차피 이 안에 포함).
+            action = action.clone()
+            action[:, 3:6] = 0.0
+        elif ZERO_YAW:
             # 2026-10-06(기범): yaw(drz)는 로봇마다 의미가 달라지는 월드 회전이고(실로봇 IK도
             # 5D라 애초에 안 풀림, so101_act_bc.ZERO_YAW 참고), roll/pitch는 실로봇 IK가 실제로
             # 받아들이는 자유도라 학습 타깃에 남긴다. 녹화된 원본(raw)에는 6DOF 그대로 있으니

@@ -47,6 +47,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--save-every", type=int, default=10, help="몇 epoch마다 체크포인트를 남길지")
     p.add_argument("--stats-max-samples", type=int, default=2000, help="정규화 통계 계산에 쓸 최대 샘플 수")
     p.add_argument("--no-precompute-seam", action="store_true", help="seam 특징 사전계산(캐시) 끄기")
+    p.add_argument(
+        "--xyz-only", action="store_true",
+        help="학습 타깃에서 회전(roll/pitch/yaw)을 전부 0으로 마스킹 — 4DOF(xyz+그리퍼) MVP용. "
+             "녹화 데이터 자체는 안 바뀌므로 나중에 이 플래그 없이 다시 돌리면 회전 포함 버전도 "
+             "바로 학습 가능(재녹화 불필요).",
+    )
     return p.parse_args()
 
 
@@ -68,8 +74,10 @@ def main() -> None:
     cfg.device = str(device)
 
     kind = detect_dataset_kind(args.repo_id, args.root)
-    dataset = load_bc_dataset(args.repo_id, root=args.root, precompute_seam=not args.no_precompute_seam)
-    print(f"dataset kind={kind} frames={len(dataset)} fps={dataset.raw.fps}")
+    dataset = load_bc_dataset(
+        args.repo_id, root=args.root, precompute_seam=not args.no_precompute_seam, xyz_only=args.xyz_only,
+    )
+    print(f"dataset kind={kind} xyz_only={args.xyz_only} frames={len(dataset)} fps={dataset.raw.fps}")
 
     # 변환 후(EEF pose/delta/seam) 값으로 정규화 통계 계산 → 전/후처리 파이프라인에 주입
     stats = dataset.compute_stats(max_samples=args.stats_max_samples)
@@ -112,12 +120,12 @@ def main() -> None:
         if (epoch + 1) % args.save_every == 0 or epoch + 1 == args.epochs:
             save_checkpoint(
                 out_dir, f"epoch{epoch:04d}", policy, preprocessor, postprocessor,
-                {"epoch": epoch, "step": step, "loss": last_loss, "repo_id": args.repo_id},
+                {"epoch": epoch, "step": step, "loss": last_loss, "repo_id": args.repo_id, "xyz_only": args.xyz_only},
             )
 
     final = save_checkpoint(
         out_dir, "last", policy, preprocessor, postprocessor,
-        {"epoch": args.epochs - 1, "step": step, "loss": last_loss, "repo_id": args.repo_id},
+        {"epoch": args.epochs - 1, "step": step, "loss": last_loss, "repo_id": args.repo_id, "xyz_only": args.xyz_only},
     )
     print(f"done. checkpoints in {out_dir} (latest: {final})")
 

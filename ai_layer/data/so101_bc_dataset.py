@@ -70,7 +70,9 @@ class SO101BCDataset(Dataset):
         chunk_size: int = CHUNK_SIZE,
         dt_ai_sec: float = DT_AI_SEC,
         precompute_seam: bool = True,
+        xyz_only: bool = False,
     ):
+        self.xyz_only = xyz_only
         # action[k] = t + (k+1)·dt. (k=0이 dt 뒤 명령이 되도록 1부터 시작)
         delta_timestamps = {
             ACTION: [(k + 1) * dt_ai_sec for k in range(chunk_size)],
@@ -128,7 +130,10 @@ class SO101BCDataset(Dataset):
         """
         poses = joint_traj_to_eef_pose_traj(self.kin, joint_deg_seq)
         deltas = eef_pose_traj_to_delta_traj(poses, anchor_pose=anchor_pose)
-        if ZERO_YAW:
+        if self.xyz_only:
+            deltas = deltas.copy()
+            deltas[:, 3:6] = 0.0  # roll/pitch/yaw 전부 마스킹 — 4DOF(xyz+그리퍼) MVP용
+        elif ZERO_YAW:
             deltas = zero_yaw(deltas)  # 5자유도 실로봇: yaw 증분은 0
         gripper = joint_deg_seq[:, -1:]  # JOINT_NAMES 마지막 = gripper
         return np.concatenate([deltas, gripper], axis=1)
