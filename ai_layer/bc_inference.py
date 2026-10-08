@@ -16,11 +16,19 @@ from lerobot.processor import PolicyProcessorPipeline
 from lerobot.processor.converters import policy_action_to_transition, transition_to_policy_action
 from lerobot.utils.constants import POLICY_POSTPROCESSOR_DEFAULT_NAME, POLICY_PREPROCESSOR_DEFAULT_NAME
 
+from ai_layer.configs.so101_act_bc import build_so101_act_config
+
 
 def load_bc_checkpoint(ckpt_dir: str | Path, device: str = "cuda"):
     """폴더 하나에서 정책 + 전/후처리(정규화 통계 포함)를 함께 복원한다."""
     ckpt_dir = Path(ckpt_dir)
-    policy = ACTPolicy.from_pretrained(ckpt_dir)
+    # 2026-10-08: config=를 안 넘기면 ACTPolicy.from_pretrained가 로컬 경로를 HF Hub repo_id로
+    # 착각해서 HFValidationError가 난다(train_bc.py --init-checkpoint에서 실측 확인한 것과 동일
+    # 버그 — 이 함수는 train_rl.py의 --bc-checkpoint 로딩이 공유해서 쓰는데, 그동안 로컬 BC
+    # 체크포인트로 RL을 돌리면 여기서 바로 죽었을 것).
+    cfg = build_so101_act_config()
+    cfg.device = device
+    policy = ACTPolicy.from_pretrained(ckpt_dir, config=cfg)
     policy.to(device)
     policy.eval()
     preprocessor = PolicyProcessorPipeline.from_pretrained(

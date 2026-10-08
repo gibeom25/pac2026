@@ -208,6 +208,13 @@ def main() -> None:
                 # record_mujoco.py와 동일 규약 — 바닥을 뚫지 않고 그 높이에서 버틴다(RL의
                 # 즉시종료 대신, teleop 데이터와 같은 모양의 "시연"으로 기록하기 위함).
                 target_pos[2] += MIN_TIP_Z - tip[2]
+            # so101_seam_env.py step()과 동일한 안전 컷오프 — 선에서 off_seam_safety_dist보다
+            # 멀면 정책이 트리거를 켜도 실제로는 비활성(2026-10-08: 처음엔 이 게이트 없이
+            # action_np[6]>0.5를 그대로 썼는데, 리뷰에서 "RL이 학습 중 이 안전장치 밖에서 트리거를
+            # 켤 수 있는 상태를 롤아웃이 그대로 기록하면 distill된 BC가 그 선 밖 도포까지 배운다"는
+            # 걸 지적받아 추가함 — RL이 실제로 보상/학습받은 것과 롤아웃 기록이 어긋나면 안 됨).
+            dist_to_seam = float(np.linalg.norm(tip[None, :] - target_polyline, axis=1).min())
+            bit = bit if dist_to_seam <= env_cfg.off_seam_safety_dist else 0.0
             if bit and step % BEAD_STRIDE == 0:
                 bead_points.append(BeadDrop(tip.copy()))
             for b in bead_points:
