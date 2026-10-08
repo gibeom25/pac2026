@@ -78,6 +78,7 @@ class CollectTab(QWidget):
         self._test_mode = False
 
         self._build_ui()
+        self._on_source_changed(self.source_combo.currentText())  # 초기 표시 상태 맞춤(기본=시뮬레이션)
 
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._tick)
@@ -141,6 +142,7 @@ class CollectTab(QWidget):
         # 시뮬 전용(아래 실로봇 연결 섹션이 실로봇 전용)이고, 선택 안 한 쪽 설정은 그냥 무시된다.
         self.source_combo = QComboBox()
         self.source_combo.addItems([SOURCE_SIM, SOURCE_REAL])
+        self.source_combo.currentTextChanged.connect(self._on_source_changed)
         form.addRow("소스", self.source_combo)
 
         self.repo_id_edit = QLineEdit()
@@ -211,6 +213,7 @@ class CollectTab(QWidget):
         self.recalibrate_check = QCheckBox("조이스틱 스로틀 재보정 (처음 켤 때만 체크 — 터미널에 뜨는 보정 안내도 봐야 함)")
         form.addRow("", self.recalibrate_check)
 
+        self._settings_form = form  # _on_source_changed()가 scene/variant 행을 숨기는 데 씀
         return box
 
     def _build_real_robot_group(self) -> QGroupBox:
@@ -250,6 +253,7 @@ class CollectTab(QWidget):
         )
         form.addRow("", self.real_calibrate_check)
 
+        self._real_robot_group = box  # _on_source_changed()가 소스=시뮬레이션일 때 통째로 숨김
         return box
 
     def _build_session_group(self) -> QGroupBox:
@@ -318,6 +322,15 @@ class CollectTab(QWidget):
         return box
 
     # ---- 공통 ---------------------------------------------------------
+    def _on_source_changed(self, source: str) -> None:
+        """소스=시뮬레이션/실로봇에 따라 안 쓰는 설정을 숨긴다(2026-10-08 정리 — 이전엔 둘 다
+        항상 보여서 "scene/variant가 실로봇에선 뭘 하는 거지" 같은 혼란이 있었다). 값 자체는
+        안 지운다 — 다시 시뮬레이션으로 돌아가면 scene/variant가 그대로 남아있다."""
+        is_real = source == SOURCE_REAL
+        self._real_robot_group.setVisible(is_real)
+        self._settings_form.setRowVisible(self.scene_combo, not is_real)
+        self._settings_form.setRowVisible(self.variant_spin, not is_real)
+
     def _collect_args(self) -> argparse.Namespace:
         repo_id = self.repo_id_edit.text().strip() or None
         root = self.root_edit.text().strip() or None
