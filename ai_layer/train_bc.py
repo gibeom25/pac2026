@@ -29,6 +29,8 @@ from torch.utils.data import DataLoader
 
 from lerobot.policies.act.modeling_act import ACTPolicy
 from lerobot.policies.act.processor_act import make_act_pre_post_processors
+from lerobot.processor import PolicyProcessorPipeline
+from lerobot.utils.constants import POLICY_POSTPROCESSOR_DEFAULT_NAME, POLICY_PREPROCESSOR_DEFAULT_NAME
 
 from ai_layer.configs.so101_act_bc import build_so101_act_config
 from ai_layer.data import detect_dataset_kind, load_bc_dataset
@@ -52,6 +54,14 @@ def parse_args() -> argparse.Namespace:
         help="학습 타깃에서 회전(roll/pitch/yaw)을 전부 0으로 마스킹 — 4DOF(xyz+그리퍼) MVP용. "
              "녹화 데이터 자체는 안 바뀌므로 나중에 이 플래그 없이 다시 돌리면 회전 포함 버전도 "
              "바로 학습 가능(재녹화 불필요).",
+    )
+    p.add_argument(
+        "--init-checkpoint", default=None,
+        help="처음부터(ACTPolicy(cfg)) 새로 만드는 대신 이 체크포인트 폴더(예: outputs/bc_act/last)에서 "
+             "가중치+전/후처리 정규화 통계를 그대로 불러와서 이어서 학습(fine-tuning)한다. 2026-10-08: "
+             "실로봇 데이터로 fine-tuning하거나, RL로 다듬은 롤아웃(rl_rollout_to_dataset.py 참고)을 "
+             "증류할 때 씀. 정규화 통계는 지금 데이터셋에서 새로 안 뽑고 체크포인트에 저장된 걸 그대로 "
+             "쓴다(이미 학습된 가중치가 그 정규화 기준으로 특징을 배웠으므로 바꾸면 안 맞아짐).",
     )
     return p.parse_args()
 
@@ -79,10 +89,6 @@ def main() -> None:
     )
     print(f"dataset kind={kind} xyz_only={args.xyz_only} frames={len(dataset)} fps={dataset.raw.fps}")
 
-    # 변환 후(EEF pose/delta/seam) 값으로 정규화 통계 계산 → 전/후처리 파이프라인에 주입
-    stats = dataset.compute_stats(max_samples=args.stats_max_samples)
-    preprocessor, postprocessor = make_act_pre_post_processors(cfg, dataset_stats=stats)
-
     loader = DataLoader(
         dataset,
         batch_size=args.batch_size,
@@ -91,7 +97,31 @@ def main() -> None:
         drop_last=True,
     )
 
-    policy = ACTPolicy(cfg)
+    if args.init_checkpoint is not None:
+        # fine-tuning: 가중치 + 정규화 통계를 체크포인트에서 그대로 가져온다 — 지금 데이터셋에서
+        # 통계를 새로 뽑지 않는다(이미 학습된 가중치가 기존 정규화 기준으로 특징을 배웠으므로,
+        # fine-tuning 데이터가 적거나 분포가 조금 달라도 정규화 기준 자체는 유지해야 함).
+        print(f"init from checkpoint: {args.init_checkpoint}")
+        # config=cfg를 넘겨야 한다 — 안 그러면 from_pretrained가 pretrained_name_or_path를
+        # 로컬 경로로 보기 전에 먼저 PreTrainedConfig.from_pretrained()로 HF Hub repo_id인 것처럼
+        # config.json을 내려받으려다("경로에 '/'가 있으니 네임스페이스/이름이겠지") 실패한다
+        # (실측 확인된 버그 — HFValidationError). config를 이미 들고 있으니 그걸 바로 넘겨서
+        # 그 단계 자체를 건너뛴다.
+        policy = ACTPolicy.from_pretrained(args.init_checkpoint, config=cfg)
+        # save_pretrained()이 실제로 쓰는 파일명은 "policy_preprocessor.json"(.json 포함)인데
+        # POLICY_PREPROCESSOR_DEFAULT_NAME 상수엔 확장자가 없어서 from_pretrained가 그대로 찾다
+        # FileNotFoundError 난다(실측 확인) — .json을 직접 붙여서 넘긴다.
+        preprocessor = PolicyProcessorPipeline.from_pretrained(
+            args.init_checkpoint, config_filename=f"{POLICY_PREPROCESSOR_DEFAULT_NAME}.json"
+        )
+        postprocessor = PolicyProcessorPipeline.from_pretrained(
+            args.init_checkpoint, config_filename=f"{POLICY_POSTPROCESSOR_DEFAULT_NAME}.json"
+        )
+    else:
+        # 변환 후(EEF pose/delta/seam) 값으로 정규화 통계 계산 → 전/후처리 파이프라인에 주입
+        stats = dataset.compute_stats(max_samples=args.stats_max_samples)
+        preprocessor, postprocessor = make_act_pre_post_processors(cfg, dataset_stats=stats)
+        policy = ACTPolicy(cfg)
     policy.to(device)
     policy.train()
 
@@ -127,12 +157,12 @@ def main() -> None:
         if (epoch + 1) % args.save_every == 0 or epoch + 1 == args.epochs:
             save_checkpoint(
                 out_dir, f"epoch{epoch:04d}", policy, preprocessor, postprocessor,
-                {"epoch": epoch, "step": step, "loss": last_loss, "repo_id": args.repo_id, "xyz_only": args.xyz_only},
+                {"epoch": epoch, "step": step, "loss": last_loss, "repo_id": args.repo_id, "xyz_only": args.xyz_only, "init_checkpoint": args.init_checkpoint},
             )
 
     final = save_checkpoint(
         out_dir, "last", policy, preprocessor, postprocessor,
-        {"epoch": args.epochs - 1, "step": step, "loss": last_loss, "repo_id": args.repo_id, "xyz_only": args.xyz_only},
+        {"epoch": args.epochs - 1, "step": step, "loss": last_loss, "repo_id": args.repo_id, "xyz_only": args.xyz_only, "init_checkpoint": args.init_checkpoint},
     )
     metrics_file.close()
     print(f"done. checkpoints in {out_dir} (latest: {final})")
