@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 
 import pyqtgraph as pg
-from PyQt6.QtCore import QProcess, QTimer
+from PyQt6.QtCore import QProcess, QProcessEnvironment, QTimer
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -110,7 +110,14 @@ class _TrainingSection(QWidget):
 
         self.process = QProcess(self)
         self.process.setWorkingDirectory(str(_REPO_ROOT))
-        env = self.process.processEnvironment()
+        # 2026-10-08: self.process.processEnvironment()는 부모 프로세스 환경을 물려주는 게
+        # 아니라 **빈 환경**을 돌려준다(Qt 문서/실측 둘 다 확인) — 그걸 기준으로 PYTHONPATH만
+        # 넣으면 DISPLAY/PATH/HOME/CUDA 관련 변수가 전부 날아간 환경으로 자식 프로세스가 뜬다.
+        # BC/RL 학습 subprocess는 렌더링을 안 해서 이 버그가 안 드러났는데, RL 롤아웃
+        # (rl_rollout_to_dataset.py)은 MuJoCo 렌더러가 DISPLAY를 써서 바로 실패했다(실측
+        # 확인: "OpenGL platform library has not been loaded"). systemEnvironment()로 실제
+        # 상속 환경을 베이스로 깔고 그 위에 PYTHONPATH만 덧씌운다.
+        env = QProcessEnvironment.systemEnvironment()
         env.insert("PYTHONPATH", str(_REPO_ROOT))
         self.process.setProcessEnvironment(env)
         self.process.setProgram(sys.executable)
@@ -206,6 +213,14 @@ class BCTrainingSection(_TrainingSection):
         form.addRow("device", self.device_combo)
         self.xyz_only_check = QCheckBox("xyz-only (회전 마스킹, 4DOF MVP)")
         form.addRow("", self.xyz_only_check)
+        # 2026-10-08: "시뮬 가중치에 실로봇/RL 롤아웃 데이터를 fine-tuning"하고 싶다는 요청 —
+        # 처음부터 새로 만드는 대신 기존 체크포인트에서 가중치+정규화 통계를 그대로 가져와
+        # 이어서 학습한다(train_bc.py --init-checkpoint 참고). 비워두면 기존처럼 새로 학습.
+        self.init_checkpoint_edit = QLineEdit()
+        self.init_checkpoint_edit.setPlaceholderText(
+            "비우면 새로 학습. 채우면 그 체크포인트(예: outputs/bc_act/last)에서 이어서 fine-tuning"
+        )
+        form.addRow("init-checkpoint", self.init_checkpoint_edit)
 
     def _build_command(self) -> tuple[list[str], Path] | None:
         repo_id = self.repo_id_edit.text().strip()
@@ -226,6 +241,9 @@ class BCTrainingSection(_TrainingSection):
             argv += ["--root", root]
         if self.xyz_only_check.isChecked():
             argv += ["--xyz-only"]
+        init_ckpt = self.init_checkpoint_edit.text().strip()
+        if init_ckpt:
+            argv += ["--init-checkpoint", init_ckpt]
         out_dir_abs = out_dir if out_dir.is_absolute() else _REPO_ROOT / out_dir
         return argv, out_dir_abs
 
@@ -272,8 +290,65 @@ class RLTrainingSection(_TrainingSection):
         return argv, out_dir_abs
 
 
+class RLRolloutSection(_TrainingSection):
+    """2026-10-08: "RL이 다듬은 동작을 BC에 증류"하는 2단계 흐름의 1단계 — 학습된 SAC 정책을
+    시뮬에서 굴려서(rollout) BC 데이터셋 포맷으로 기록한다(tools/rl_rollout_to_dataset.py).
+    반복 학습이 아니라 한 번 쭉 도는 배치 작업이라 metrics.jsonl/그래프가 없다(series_spec 비움)
+    — 로그에 에피소드별 진행 상황만 찍힌다. 끝나면 그 repo-id를 BC 탭의 repo-id + init-checkpoint
+    에 넣어서 이어서 학습(distill)하면 된다."""
+
+    series_spec: list[tuple[str, str]] = []
+
+    def _build_settings_form(self, form: QFormLayout) -> None:
+        self.sac_checkpoint_edit = QLineEdit()
+        self.sac_checkpoint_edit.setPlaceholderText("예: outputs/rl_sac/sac_final (train_rl.py 체크포인트)")
+        form.addRow("sac-checkpoint", self.sac_checkpoint_edit)
+        self.repo_id_edit = QLineEdit()
+        self.repo_id_edit.setPlaceholderText("이 롤아웃으로 새로 만들 데이터셋 repo-id")
+        form.addRow("repo-id (출력)", self.repo_id_edit)
+        self.root_edit = QLineEdit()
+        self.root_edit.setPlaceholderText("비우면 datasets/<repo-id>")
+        form.addRow("root", self.root_edit)
+        self.num_episodes_spin = QSpinBox()
+        self.num_episodes_spin.setRange(1, 10000)
+        self.num_episodes_spin.setValue(50)
+        form.addRow("num-episodes", self.num_episodes_spin)
+        self.episode_seconds_spin = QDoubleSpinBox()
+        self.episode_seconds_spin.setRange(1.0, 120.0)
+        self.episode_seconds_spin.setValue(12.0)
+        form.addRow("episode-seconds", self.episode_seconds_spin)
+        self.device_combo = QComboBox()
+        self.device_combo.addItems(["cuda", "cpu"])
+        form.addRow("device", self.device_combo)
+
+    def _build_command(self) -> tuple[list[str], Path] | None:
+        sac_ckpt = self.sac_checkpoint_edit.text().strip()
+        repo_id = self.repo_id_edit.text().strip()
+        if not sac_ckpt or not repo_id:
+            self.log_view.appendPlainText("[오류] sac-checkpoint와 repo-id(출력)를 모두 입력하세요.")
+            return None
+        argv = [
+            str(_REPO_ROOT / "ai_layer" / "tools" / "rl_rollout_to_dataset.py"),
+            "--sac-checkpoint", sac_ckpt,
+            "--repo-id", repo_id,
+            "--num-episodes", str(self.num_episodes_spin.value()),
+            "--episode-seconds", str(self.episode_seconds_spin.value()),
+            "--device", self.device_combo.currentText(),
+        ]
+        root = self.root_edit.text().strip()
+        if root:
+            argv += ["--root", root]
+        # 2026-10-08: out_dir은 _TrainingSection._on_start()가 미리 mkdir(exist_ok=True)하는
+        # 용도일 뿐인데, 실제 데이터셋 경로(위 --root/--repo-id)를 그대로 주면 LeRobotDataset.
+        # create()가 "이미 있는 디렉터리"라고 바로 실패한다(실측 확인된 버그) — 롤아웃은
+        # metrics.jsonl도 안 남기므로(series_spec 비어있음) out_dir은 데이터셋 경로와 무관한,
+        # 미리 만들어둬도 안전한 자리표시 폴더로 분리한다.
+        out_dir = _REPO_ROOT / "outputs" / "rl_rollout_logs"
+        return argv, out_dir
+
+
 class TrainTab(QWidget):
-    """BC/RL 하위 탭을 묶는다."""
+    """BC/RL/RL롤아웃 하위 탭을 묶는다."""
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
@@ -281,10 +356,13 @@ class TrainTab(QWidget):
         sub_tabs = QTabWidget()
         self.bc_section = BCTrainingSection()
         self.rl_section = RLTrainingSection()
+        self.rl_rollout_section = RLRolloutSection()
         sub_tabs.addTab(self.bc_section, "BC (지도학습)")
         sub_tabs.addTab(self.rl_section, "RL (SAC)")
+        sub_tabs.addTab(self.rl_rollout_section, "RL→BC 증류 (롤아웃)")
         layout.addWidget(sub_tabs)
 
     def shutdown(self) -> None:
         self.bc_section.shutdown()
         self.rl_section.shutdown()
+        self.rl_rollout_section.shutdown()

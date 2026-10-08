@@ -79,3 +79,24 @@ BC/RL 하위 탭이 있고 각각 `ai_layer/train_bc.py`/`ai_layer/train_rl.py`�
 `RealRobotEpisodeTicker`(lerobot SOFollower + IK)로 바뀐다 — 데이터셋 스키마가 동일해서
 BC/RL 학습 코드는 안 바뀐다. 자세한 건 `ai_layer/real/README.md`(안전 주의사항 포함 —
 **실제 하드웨어로 검증 못 한 코드**).
+
+## BC fine-tuning / RL→BC 증류 (2026-10-08)
+
+학습 탭에 두 가지가 추가됐다 — "시뮬 가중치에 실로봇/RL 데이터를 fine-tuning하고 싶다"는
+요청에 대한 답:
+
+- **BC 탭의 `init-checkpoint` 필드**: 비우면 기존처럼 처음부터 학습. 채우면(예:
+  `outputs/bc_act/last`) 그 체크포인트의 가중치+정규화 통계를 그대로 불러와 이어서
+  학습(fine-tuning) — `train_bc.py --init-checkpoint`. 실로봇 데이터로 이어서 학습할 때 씀.
+- **"RL→BC 증류 (롤아웃)" 탭**: RL(SAC)과 BC(ACT)는 서로 다른 신경망이라 SAC 가중치를 ACT로
+  직접 못 옮긴다 — 그래서 학습된 SAC 정책을 시뮬에서 굴려(rollout) BC 데이터셋 포맷으로
+  기록하는 중간 단계(`tools/rl_rollout_to_dataset.py`)를 거친다. 이 탭에서 롤아웃 데이터셋을
+  만든 뒤, 그 repo-id를 BC 탭의 repo-id + init-checkpoint(기존 BC 체크포인트)에 넣고 적은
+  epoch로 돌리면 "RL이 다듬은 동작"이 BC 가중치에 증류된다. 반복 학습이 아니라 한 번 쭉 도는
+  배치 작업이라 그래프는 없고 로그만 나온다.
+
+**주의**: RL 학습 환경(`so101_seam_env.py`)은 항상 같은 텍스처(scene_a4.xml, "curve" 모양)만
+렌더링하고 ground-truth 경로는 매 에피소드 무작위로 다른 형태를 고른다(RL 정책이 이미지를
+관측으로 안 써서 학습 자체엔 문제없었음) — 그래서 롤아웃 스크립트는 실제 뽑힌 (형태, variant)에
+맞는 텍스처 MJCF를 에피소드마다 새로 로드해서 렌더링한다(안 그러면 화면과 행동이 안 맞는
+엉터리 데이터가 기록됨 — 실제로 찾아서 고친 문제).
