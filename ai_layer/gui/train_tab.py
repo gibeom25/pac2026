@@ -75,7 +75,7 @@ class _TrainingSection(QWidget):
         self.plot.setBackground("w")
         self.plot.addLegend()
         self._curves = {}
-        colors = ["b", "r", "g", "m", "c"]
+        colors = ["b", "r", "g", "m", "c", "y", "k"]
         for i, (name, _key) in enumerate(self.series_spec):
             self._curves[name] = self.plot.plot([], [], pen=colors[i % len(colors)], name=name)
         splitter.addWidget(self.log_view)
@@ -253,6 +253,15 @@ class RLTrainingSection(_TrainingSection):
         ("reward_mean", "reward_mean"),
         ("critic_loss", "critic_loss"),
         ("bc_action_distance_mean", "bc_action_distance_mean"),
+        # 2026-10-08: 보상 성분별 원본 값(가중치 곱하기 전) — "R_imitation/R_smooth와 R_track/
+        # R_coverage 스케일이 안 맞을 수 있다"는 리뷰 지적을 실제 학습 중 눈으로 바로 볼 수
+        # 있게. 실측해보니 실제로 r_imit/r_smooth가 r_track보다 한 자릿수 이상 커서(초반 랜덤
+        # 정책 기준 r_imit≈-1.1, r_smooth≈-2.3, r_track≈-0.2) 선 추종 신호가 거의 묻힌다 —
+        # reward.py/so101_seam_env.py 리뷰 참고, 재조정 필요할 수 있음.
+        ("r_imit_mean", "r_imit_mean"),
+        ("r_track_mean", "r_track_mean"),
+        ("r_smooth_mean", "r_smooth_mean"),
+        ("r_coverage_mean", "r_coverage_mean"),
     ]
 
     def _build_settings_form(self, form: QFormLayout) -> None:

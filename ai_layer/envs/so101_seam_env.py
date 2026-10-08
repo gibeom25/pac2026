@@ -211,14 +211,20 @@ class SO101SeamEnv(gym.Env):
 
     def _compute_reward(
         self, continuous_action: np.ndarray, gripper_active: float, tip_pos: np.ndarray
-    ) -> tuple[float, float | None]:
-        """reward와 함께 "RL이 BC를 얼마나 잘 따라가는지" 점수(bc_action_distance)도 반환한다.
+    ) -> tuple[float, float | None, dict[str, float]]:
+        """reward와 함께 "RL이 BC를 얼마나 잘 따라가는지" 점수(bc_action_distance), 보상 성분별
+        원본 값(components)을 반환한다.
 
         2026-10-06(기범): imitation_reward는 이미 total_reward 안에서 가중합으로만 쓰이고
         있었는데("RL이 BC를 얼마나 잘 따라갈지" 자체는 스칼라 보상에 섞여서 사라짐), 그걸
         학습 중 추이로 보고 싶다는 요청 — action_rl/action_bc 거리(정규화 [-1,1] 공간, L2)를
         따로 계산해 step()의 info에 실어서 train_rl.py가 로그 파일에 쌓게 한다. BC teacher가
         없으면(--bc-checkpoint 없음) None.
+
+        2026-10-08: "강화학습 보상 설계가 잘 되어있는지" 리뷰에서 R_imitation/R_smooth([-1,1]
+        정규화 공간 제곱합)와 R_track/R_coverage(실측 미터 단위)가 스케일이 다를 수 있다는
+        지적을 받았는데, 그동안 가중합된 reward만 로그에 남아서 실제로 그런지 확인할 방법이
+        없었다 — 성분별 원본 값도 같이 반환해서 train_rl.py가 metrics.jsonl에 찍게 한다.
         """
         progress_fraction = self._total_steps / float(self._total_env_steps)
         weights = self._weight_schedule.weights(progress_fraction)
@@ -230,7 +236,7 @@ class SO101SeamEnv(gym.Env):
             else None
         )
 
-        reward_t, new_progress_t, new_coverage_mask = total_reward(
+        reward_t, new_progress_t, new_coverage_mask, components = total_reward(
             action_rl=torch.from_numpy(continuous_action).float().unsqueeze(0),
             action_tm1=torch.from_numpy(self._prev_action).float().unsqueeze(0),
             eef_pos=torch.from_numpy(tip_pos).float().unsqueeze(0),
@@ -249,7 +255,8 @@ class SO101SeamEnv(gym.Env):
         )
         self._prev_progress = new_progress_t.item()
         self._coverage_mask = new_coverage_mask
-        return reward_t.item(), bc_action_distance
+        components_raw = {k: v.item() for k, v in components.items()}
+        return reward_t.item(), bc_action_distance, components_raw
 
     # ---- Gymnasium API ----
     def reset(self, *, seed: int | None = None, options: dict | None = None):
@@ -306,7 +313,9 @@ class SO101SeamEnv(gym.Env):
 
         floor_touched = _contact_pos(self.data, self.rod_gid, self.floor_gid) is not None
 
-        reward, bc_action_distance = self._compute_reward(continuous, gripper_active=float(gripper_active), tip_pos=tip)
+        reward, bc_action_distance, components = self._compute_reward(
+            continuous, gripper_active=float(gripper_active), tip_pos=tip
+        )
         if floor_touched:
             reward -= self.cfg.floor_contact_penalty
         obs = self._get_observations(tip_pos=tip)
@@ -317,7 +326,9 @@ class SO101SeamEnv(gym.Env):
         truncated = self._episode_step >= self.max_episode_length
         terminated = bool(floor_touched)  # record_mujoco.py와 동일 규약: 표면 접촉 = 즉시 실패
 
-        info = {} if bc_action_distance is None else {"bc_action_distance": bc_action_distance}
+        info = dict(components)
+        if bc_action_distance is not None:
+            info["bc_action_distance"] = bc_action_distance
         return obs, reward, terminated, truncated, info
 
     def close(self) -> None:

@@ -92,6 +92,11 @@ def main() -> None:
     metrics_file = metrics_path.open("a")
     window_rewards: list[float] = []
     window_bc_dists: list[float] = []
+    # 2026-10-08: "보상 설계가 잘 되어있는지" 리뷰에서 R_imitation/R_smooth(정규화 [-1,1] 공간
+    # 제곱합)와 R_track/R_coverage(실측 미터 단위)의 스케일이 안 맞을 수 있다는 지적을 받았는데,
+    # 합산된 reward만 로그에 남아서 실제로 그런지 확인할 방법이 없었다 — 성분별 원본 값(가중치
+    # 곱하기 전)도 같이 쌓는다. so101_seam_env.py의 info 딕셔너리가 이제 이 키들을 담아서 온다.
+    window_components: dict[str, list[float]] = {"r_imit": [], "r_track": [], "r_smooth": [], "r_coverage": []}
 
     def norm_obs(obs: dict) -> dict:
         """관측 dict(배치) -> 정규화 + device. 파이프라인 출력에서 관측 키만 남긴다 (None/스칼라 제거)."""
@@ -117,6 +122,9 @@ def main() -> None:
         window_rewards.append(reward)
         if "bc_action_distance" in info:
             window_bc_dists.append(info["bc_action_distance"])
+        for key in window_components:
+            if key in info:
+                window_components[key].append(info[key])
         if truncated or terminated:
             obs, _ = env.reset()
 
@@ -158,21 +166,31 @@ def main() -> None:
         if step % args_cli.log_every == 0 and step > 0:
             reward_mean = sum(window_rewards) / len(window_rewards)
             bc_dist_mean = sum(window_bc_dists) / len(window_bc_dists) if window_bc_dists else None
+            component_means = {
+                f"{key}_mean": (sum(vals) / len(vals) if vals else None) for key, vals in window_components.items()
+            }
             critic_loss_val = critic_loss.item()
             critic_loss_json = None if critic_loss_val != critic_loss_val else critic_loss_val  # NaN != NaN
+            comp_str = " ".join(
+                f"{k}={v:.4f}" for k, v in component_means.items() if v is not None
+            )
             print(
                 f"step={step} critic_loss={critic_loss_val:.4f} reward_mean={reward_mean:.4f}"
                 + (f" bc_action_distance_mean={bc_dist_mean:.4f}" if bc_dist_mean is not None else "")
+                + (f" {comp_str}" if comp_str else "")
             )
             metrics_file.write(json.dumps({
                 "step": step,
                 "critic_loss": critic_loss_json,
                 "reward_mean": reward_mean,
                 "bc_action_distance_mean": bc_dist_mean,
+                **component_means,
             }) + "\n")
             metrics_file.flush()
             window_rewards.clear()
             window_bc_dists.clear()
+            for vals in window_components.values():
+                vals.clear()
 
         if step % args_cli.ckpt_every == 0 and step > 0:
             policy.save_pretrained(out_dir / f"sac_step{step:07d}")

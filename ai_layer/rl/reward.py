@@ -204,7 +204,7 @@ def total_reward(
     coverage_radius: float = 0.008,
     off_target_penalty_scale: float = 2.0,
     dim_weights: torch.Tensor | None = None,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, dict[str, torch.Tensor]]:
     """action_rl / action_bc / action_tm1 은 모두 같은 스케일(env 정규화 [-1,1])이어야 한다.
 
     coverage_mask: (N, K) bool, 에피소드 시작 시 전부 False로 호출 측이 초기화 — coverage_reward
@@ -212,7 +212,12 @@ def total_reward(
     imitation_reward/smoothness_reward로 그대로 전달(회전 성분 가중치 낮추기용, 2026-10-06).
 
     Returns:
-        reward, new_progress, new_coverage_mask
+        reward, new_progress, new_coverage_mask, components
+        components: {"r_imit", "r_track", "r_smooth", "r_coverage"} — 가중치 곱하기 전 원본 값
+        (2026-10-08: 리뷰에서 "R_imitation/R_smooth([-1,1] 정규화 공간 제곱합)와 R_track/
+        R_coverage(실측 미터 단위)가 애초에 스케일이 다를 수 있는데 지금은 합산된 reward만
+        보여서 확인할 방법이 없다"는 지적을 받아 추가 — train_rl.py가 metrics.jsonl에 따로
+        찍어서 실제 학습 중 네 항의 크기를 눈으로 비교할 수 있게 한다).
     """
     w1, w2, w3, w4 = weights
     r_imit = imitation_reward(action_rl, action_bc, dim_weights)
@@ -226,4 +231,5 @@ def total_reward(
         coverage_radius=coverage_radius, off_target_penalty_scale=off_target_penalty_scale,
     )
     reward = w1 * r_imit + w2 * r_track + w3 * r_smooth + w4 * r_coverage
-    return reward, new_progress, new_coverage_mask
+    components = {"r_imit": r_imit, "r_track": r_track, "r_smooth": r_smooth, "r_coverage": r_coverage}
+    return reward, new_progress, new_coverage_mask, components
