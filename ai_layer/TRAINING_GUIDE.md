@@ -4,6 +4,8 @@
 처음부터 끝까지 돌리는 실전 순서다. 각 단계는 이전 단계가 통과해야 다음으로 넘어가는 게 맞다 —
 중간에 건너뛰면 다음 단계에서 원인 찾기 어려운 에러가 난다.
 
+**명령어만 빠르게 보려면 저장소 루트의 [`COMMANDS.md`](../COMMANDS.md).**
+
 **최근 변경사항 요약** (이 문서가 안 맞는 것 같으면 먼저 여기부터 확인):
 - **GUI로 데이터 수집 + 학습까지 한 화면에서 하려면 `ai_layer/gui/app.py`(PyQt6)를 쓸 것**
   (`pip install PyQt6 pyqtgraph` 후 `PYTHONPATH=. python ai_layer/gui/app.py`) — 카메라 뷰
@@ -11,7 +13,7 @@
   자세한 건 `ai_layer/gui/README.md`. 구(Dear PyGui) GUI(`tools/record_gui.py`)는 이 머신에서
   간헐적으로 `X Error ... BadAccess ... X_GLXMakeCurrent`로 죽는 문제가 있어 **보류** —
   코드는 남겨뒀지만 더 권장하지 않는다. GUI 없이 터미널만 쓰고 싶으면 `record_mujoco.py`.
-- 녹화 중 바닥 접촉은 더 이상 에피소드를 폐기하지 않는다 — 도구 끝이 1cm 밑으로 안 내려가게
+- 녹화 중 바닥 접촉은 더 이상 에피소드를 폐기하지 않는다 — 도구 끝이 6mm(MIN_TIP_Z) 밑으로 안 내려가게
   막는 걸로 바뀜(1단계 참고). **RL 쪽은 그대로 접촉=즉시 종료+패널티**(5단계 참고) — 데이터
   수집과 RL 환경의 규약이 이제 서로 다르다는 점에 주의.
 - 조이스틱 스로틀(z축) 영점을 처음 한 번만 물어보고 저장해서 재사용한다(0단계 참고).
@@ -26,6 +28,19 @@
 ## 0. 처음 설치 (새 머신에서)
 
 이미 `pac2026` conda 환경이 있으면 이 절은 건너뛰고 바로 "0-1. 환경 활성화"로.
+
+### uv로 설치 (권장, 2026-10-08)
+
+저장소 루트의 `pyproject.toml`/`uv.lock`에 아래 conda 절의 의존성(+PyQt6/pyqtgraph GUI)이
+전부 고정돼 있다. 한 줄이면 `.venv/`가 만들어진다(Python 3.10, torch 2.10.0+cu128):
+
+```bash
+uv sync
+uv run python -c "import torch; print(torch.cuda.is_available())"   # True여야 함
+```
+
+이후 아래 예시의 `python ...`은 전부 `uv run python ...`으로 바꿔서 실행하면 된다
+(또는 `source .venv/bin/activate` 후 그대로). conda 절은 uv를 안 쓸 때만 따를 것.
 
 ```bash
 conda create -n pac2026 python=3.10 -y
@@ -126,10 +141,39 @@ PYTHONPATH=. python ai_layer/tools/record_mujoco.py \
   - 특정 형태만 집중적으로 모으고 싶으면 `--scene dashed` 처럼 이름을 직접 주면 그 형태 안에서만
     (variant로) 균형 샘플링한다.
 - 조작: 트리거를 누르고 있는 동안 비드가 찍힌다. **BTN_THUMB**로 그 자리에서 저장+종료(에피소드
-  길이는 기본 무제한), **BTN_THUMB2**로 폐기+재시도. 도구 끝이 일정 높이(1cm, "비트 부러짐
+  길이는 기본 무제한), **BTN_THUMB2**로 폐기+재시도. 도구 끝이 일정 높이(6mm — 2026-10-08 실물 작업 높이 1cm보다 아래로 둔 안전 하한, "비트 부러짐
   방지") 밑으로는 안 내려가게 막혀 있다 — 바닥에 닿아도 더 이상 에피소드가 폐기되지 않는다
   (2026-10-06 변경).
 - 에피소드 사이 Enter로 다음 녹화 시작. Ctrl+C로 중단해도 그때까지 저장된 에피소드는 유지된다.
+
+### 1-B. 자동 생성 (`tools/generate_demos.py`, 2026-10-08)
+
+사람 대신 정답 경로(`assets/so101/textures/*.json`)를 아는 스크립트 전문가(`tools/scripted_expert.py`)가
+같은 EpisodeTicker로 조작한다 — 포맷/물리/액션 규약은 1단계와 완전히 같고, robot_type만
+`so101_ee_mujoco_scripted`로 구분된다. 창 없이 에피소드당 약 2초.
+
+```bash
+PYTHONPATH=. uv run python ai_layer/tools/generate_demos.py \
+    --repo-id <본인id>/so101-weld-scripted --num-episodes 300
+# 보면서 확인하고 싶으면 --view (실시간 속도)
+```
+
+- 에피소드마다 씬(balanced), 경로 속도(18~35 mm/s, 곡선에서 감속), 작업 높이(9~11 mm, 실물 3D 펜은 약 1cm 띄워 그림),
+  펜 기울기(위쪽이 로봇 베이스 쪽으로 0~`--max-tilt-deg`, 기본 5°), 하강 지점 오프셋이 무작위로 바뀐다.
+- **외란**: 경로 추종 중 0~`--max-disturbances`(기본 2)번 옆으로 5~12 mm(`--disturb-mm`) 밀고,
+  전문가가 복귀하는 동작을 기록한다. 밀린 프레임 자체는 action 라벨에 안 들어간다 — BC가
+  "벗어났을 때 돌아오는 법"을 배우게 하려는 것. 끄려면 `--max-disturbances 0`.
+- 비드 색: 실물은 3D 펜이고 필라멘트 색이 미정이라 에피소드마다 흔한 PLA 색 12종(흰/미색/검정/
+  회색/빨강/주황/노랑/초록/파랑/하늘/보라/분홍) 중 하나를 밝기만 조금 흔들어 고른다
+  (`generate_demos.py`의 `FILAMENT_PALETTE`). 기존 미색 고정은 `--bead-color fixed`.
+- 작업 높이 범위는 `--hover-mm MIN MAX`(기본 9 11 — 실물 3D 펜은 약 1cm 띄워 그림).
+- 비드 커버리지 < `--min-coverage`(0.95), 경로 밖 비드 > 2%, 바닥 접촉 중 하나라도 걸리면 폐기 후 재생성.
+- 에피소드별 파라미터/품질은 `meta/scripted_params.jsonl`, 재현은 `--seed`.
+- 기존 데이터셋이 있으면 `--resume`(이어서) 또는 `--overwrite`를 줘야 한다(묻지 않음).
+- 점선(dashed)은 기본적으로 선이 끊긴 구간에서 분사를 멈춘다(`--dashed cut`, 패턴은 GT json의
+  `dash_mm`). 예전 규약(끊긴 구간도 이어서 도포)은 `--dashed bridge`. branch는 메인 선만 따라간다.
+  RL 보상도 같은 규약이다(`SO101SeamEnvCfg.dashed`, `rl/reward.py` coverage_reward의 paint/gap mask).
+- 그리다가 잠깐 옆으로 갔다 돌아오는 건 버그가 아니라 외란(위 항목)이다. 안 보고 싶으면 `--max-disturbances 0`.
 
 ## 2단계 — 데이터 점검 (`tools/check_dataset.py`)
 
@@ -167,6 +211,30 @@ PYTHONPATH=. python ai_layer/train_bc.py \
   다음 본 학습으로 늘리는 걸 추천.
 - 결과: `outputs/bc_act/last/`(config.json, model.safetensors, preprocessor/postprocessor —
   정규화 통계까지 포함된 폴더 하나, `outputs/`도 gitignore 대상).
+
+### 3-B. 시뮬 사전학습 → 실물 co-training (2026-10-08)
+
+정책 입력은 **손목 카메라 + 부스 고정(overview) 카메라** 두 대다. 고정 카메라는 부스마다 위치가
+다르고(바닥의 작은 거치대라 틀어지기도 함) 시뮬에는 로봇 팔이 없어서 재현할 수 없으므로
+"카메라 드롭아웃"으로 학습한다 — `configs/so101_act_bc.py`의 `OVERVIEW_IMAGE_KEY` 주석 참고.
+- 시뮬 데이터(키 없음): 고정 카메라 칸이 항상 검은 화면.
+- 실물 데이터(GUI 실로봇 소스에서 "오버뷰 카메라 index"를 주면 `observation.images.overview`로
+  저장됨): 학습 때 `--overview-dropout`(기본 0.3) 확률로 검은 화면, 아니면 작은 이동/회전/확대
+  흔들림(`OVERVIEW_JITTER`)을 준 실제 이미지.
+- 추론: 고정 카메라가 없거나 끊기면 검은 화면으로 채워서 그대로 동작(`bc_inference.fill_missing_images`).
+  `ai_node.py --overview-index N`으로 고정 카메라를 넣는다.
+
+```bash
+# 1) 시뮬로 사전학습
+PYTHONPATH=. uv run python ai_layer/train_bc.py --repo-id me/so101-weld-scripted --epochs 50 --out-dir outputs/bc_sim
+# 2) 실물 부스별 데이터 + 시뮬을 섞어서 이어 학습 (부스마다 repo를 따로 두고, 1개 부스는 평가용으로 빼둘 것)
+PYTHONPATH=. uv run python ai_layer/train_bc.py \
+    --repo-id me/real-booth1 me/real-booth2 me/so101-weld-scripted --weights 1 1 1 \
+    --init-from outputs/bc_sim/last --epochs 50 --out-dir outputs/bc_cotrain
+```
+- `--weights`는 데이터셋 크기와 무관한 샘플링 비율이다(위 예시는 부스1:부스2:시뮬 = 1:1:1).
+- 사전학습과 파인튜닝의 카메라 설정(`--no-overview` 여부)은 같아야 한다(다르면 바로 에러).
+- 실물 robot_type은 `so101_ee_real_joystick`, 시뮬은 `so101_ee_mujoco_*`.
 
 ## 4단계 — RL 환경 점검 (`tools/rl_env_smoke.py`)
 

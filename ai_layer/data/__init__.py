@@ -52,7 +52,8 @@ def detect_dataset_kind(repo_id: str, root: str | Path | None) -> str:
     """meta/info.json의 robot_type으로 "ee" / "joint"를 구분해 반환."""
     info_path = resolve_dataset_root(repo_id, root) / "meta" / "info.json"
     robot_type = json.loads(info_path.read_text()).get("robot_type", "") if info_path.exists() else ""
-    return "ee" if "ee_mujoco" in str(robot_type) else "joint"
+    # so101_ee_mujoco_* (시뮬 조이스틱/스크립트), so101_ee_real_* (2026-10-08~ GUI 실로봇 백엔드)
+    return "ee" if "_ee_" in str(robot_type) else "joint"
 
 
 def load_bc_dataset(repo_id: str, root: str | Path | None = None, **kwargs):

@@ -4,3 +4,4 @@ outputs/
 datasets/
 *.egg-info/
 .ipynb_checkpoints/
+.venv/

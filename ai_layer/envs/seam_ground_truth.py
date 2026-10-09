@@ -39,7 +39,11 @@ PAPER_HALF_H = 0.105  # scene_a4*.xml a4_paper geom size[1]과 일치해야 함
 # 작업 중 도구 끝이 떠 있어야 할 목표 높이. 접촉(z≈0)은 실패 조건(record_mujoco.py와 동일 규약)이라
 # 0보다 확실히 위에 둔다. coverage_reward의 coverage_radius(0.008m)가 이 높이에서의 자연스러운
 # 수직 오차를 흡수할 수 있을 정도로 작게 잡음.
+# 2026-10-08: 실물 3D 펜은 종이에서 약 1cm 띄워 그린다 (생성기는 9~11mm로 흔든다).
 HOVER_Z = 0.01
+# 점선 끊긴 구간 경계에서 이만큼 안쪽부터를 "칠하면 안 되는 곳"으로 본다 — 비드(반지름 1.8mm)가
+# 경계 너머로 조금 번지는 건 정상이므로 (generate_demos.py 품질 검사, RL gap 패널티 공통)
+GAP_MARGIN = 0.002
 
 
 def _json_path(scene: str, variant: int) -> Path:
@@ -65,6 +69,22 @@ def _resample_polyline(xy: np.ndarray, n: int) -> np.ndarray:
     idx = np.clip(np.searchsorted(cum, targets, side="right") - 1, 0, len(seg_len) - 1)
     local = (targets - cum[idx]) / np.maximum(seg_len[idx], 1e-9)
     return xy[idx] + local[:, None] * seg[idx]
+
+
+def dash_on_mask(xy: np.ndarray, dash: tuple[float, float] | None) -> np.ndarray:
+    """경로 점열 (M,2) -> 점마다 "칠해야 하는 곳인가" (M,) bool. dash=(on, off) [m]이면 시작점부터
+    누적 호 길이 s에서 (s mod (on+off)) < on 인 곳만 True (gen_seam_textures._draw_polyline과 같은
+    규칙). dash=None(점선 아님)이면 전부 True."""
+    if dash is None:
+        return np.ones(len(xy), dtype=bool)
+    s = np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(xy, axis=0), axis=1))])
+    return np.mod(s, dash[0] + dash[1]) < dash[0]
+
+
+def gap_inner_mask(paint: np.ndarray, spacing: float, margin: float = GAP_MARGIN) -> np.ndarray:
+    """칠하면 안 되는 구간 중 경계에서 margin 넘게 들어간 점 (M,) bool."""
+    k = int(round(margin / spacing))
+    return ~np.convolve(paint, np.ones(2 * k + 1), mode="same").astype(bool)
 
 
 def _mean_curvature(xy_world: np.ndarray) -> float:
@@ -115,3 +135,26 @@ class SeamGroundTruth:
         result = (polyline, curvature, thickness_m)
         self._cache[key] = result
         return result
+
+    def dash_pattern(self, scene: str, variant: int) -> tuple[float, float] | None:
+        """점선이면 (on, off) [m] — 경로 시작점부터 누적 호 길이 s에서 (s mod (on+off)) < on 이
+        선이 그려진 구간. 점선이 아니면 None. (gen_seam_textures.py가 json에 저장, 2026-10-08)"""
+        dash = json.loads(_json_path(scene, variant).read_text()).get("dash_mm")
+        return None if dash is None else (dash[0] * 0.001, dash[1] * 0.001)
+
+    def coverage_points(
+        self, scene: str, variant: int, spacing: float = 0.001, dashed: str = "cut"
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """RL coverage 보상용 촘촘한 경로 (M,3) + 칠해야 하는 점 (M,) + 칠하면 안 되는 점 (M,).
+
+        load()의 num_points(기본 20점, 약 13mm 간격)는 관측 lookahead/track 보상용이라 점선의 끊긴
+        구간(3~16mm)을 표현하지 못한다 — 그래서 coverage는 따로 spacing 간격으로 뽑는다.
+        dashed="bridge"면 점선도 연속 선으로 본다(예전 규약).
+        """
+        path_mm = np.asarray(json.loads(_json_path(scene, variant).read_text())["path_mm"], dtype=float)
+        xy = _mm_to_world_xy(path_mm)
+        total = float(np.sum(np.linalg.norm(np.diff(xy, axis=0), axis=1)))
+        xy = _resample_polyline(xy, max(2, int(np.ceil(total / spacing)) + 1))
+        paint = dash_on_mask(xy, self.dash_pattern(scene, variant) if dashed == "cut" else None)
+        pts = np.concatenate([xy, np.full((len(xy), 1), self.hover_z)], axis=1).astype(np.float32)
+        return pts, paint, gap_inner_mask(paint, spacing)

@@ -22,6 +22,7 @@ from ai_layer.tools.joystick_input import JoystickEEController
 from ai_layer.tools.keyboard_input import KeyboardEEController
 from ai_layer.tools.record_mujoco import (  # noqa: E402 — record_mujoco.py의 검증된 로직 재사용
     ACTION_KEYS,
+    BEAD_RGBA,
     BEAD_STRIDE,
     CAMERA_HW,
     CAMERA_NAME,
@@ -56,15 +57,16 @@ class MujocoDualCamera:
 
     def __init__(self, model):
         self._renderer = mujoco.Renderer(model, height=CAMERA_HW[0], width=CAMERA_HW[1])
+        self.bead_rgba = BEAD_RGBA  # generate_demos.py가 에피소드마다 필라멘트 색으로 바꾼다
 
     def get_wrist_frame(self, data, bead_points: list[BeadDrop]) -> np.ndarray:
         self._renderer.update_scene(data, camera=CAMERA_NAME)
-        _draw_bead_trail(self._renderer.scene, bead_points)
+        _draw_bead_trail(self._renderer.scene, bead_points, self.bead_rgba)
         return self._renderer.render()
 
     def get_overview_frame(self, data, bead_points: list[BeadDrop]) -> np.ndarray:
         self._renderer.update_scene(data, camera=OVERVIEW_CAMERA_NAME)
-        _draw_bead_trail(self._renderer.scene, bead_points)
+        _draw_bead_trail(self._renderer.scene, bead_points, self.bead_rgba)
         return self._renderer.render()
 
     def close(self) -> None:

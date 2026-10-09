@@ -148,7 +148,10 @@ ROD_HALF_LENGTH = 0.025  # ee_rig.xml의 tool_rod size 두 번째 값과 맞춤 
 # 매 프레임 반응형으로 막는다(아래 _run_one_episode 참고) — 녹화 중에만 적용(check_ee.py는
 # 접촉 진단용 도구라 그대로 둠). envs/seam_ground_truth.HOVER_Z(RL이 목표로 삼는 이상적인
 # 작업 높이)와 같은 값 — 실제 시연이 RL 목표 높이와 같은 높이에서 이뤄지게 하는 효과도 있음.
-MIN_TIP_Z = 0.01
+# 2026-10-08: 실물은 3D 펜이고 노즐을 종이에서 약 1cm 띄워 그린다(HOVER_Z=10mm, 생성기는 9~11mm).
+# 작업 높이가 이 하한과 같으면 높이를 흔들 여지가 없어서, 작업 높이보다 4mm 아래인 6mm로 내렸다 —
+# 그 밑으로 처박히지 않게 하는 안전 하한일 뿐 작업 높이가 아니다.
+MIN_TIP_Z = 0.006
 
 
 class BeadDrop:
@@ -242,12 +245,13 @@ class _StopRecording(Exception):
     """뷰어 창을 닫아서 전체 기록을 중단해야 할 때 — main()에서 KeyboardInterrupt와 동일하게 처리."""
 
 
-def _draw_bead_trail(scene, beads: list[BeadDrop]) -> None:
+def _draw_bead_trail(scene, beads: list[BeadDrop], rgba: np.ndarray = BEAD_RGBA) -> None:
     """축적된 비드 방울(낙하 중이거나 이미 정착한)을 시각 전용 geom으로 씬에 얹는다.
 
     scene.ngeom을 리셋하지 않고 이어서 채운다 — renderer.scene은 update_scene() 직후(이미 모델
     geom들로 ngeom이 채워진 상태) 호출하고, viewer.user_scn은 매 프레임 호출 전에 ngeom=0으로
     직접 리셋해야 한다(그래야 매번 전체 궤적을 다시 그리지, 프레임마다 누적 중복되지 않는다).
+    rgba는 generate_demos.py가 에피소드마다 필라멘트 색을 바꿀 때 쓴다(기본은 실리콘 미색).
     """
     size = np.array([BEAD_RADIUS, 0.0, 0.0])
     mat = np.eye(3).flatten()
@@ -255,7 +259,7 @@ def _draw_bead_trail(scene, beads: list[BeadDrop]) -> None:
         if scene.ngeom >= scene.maxgeom:
             break
         g = scene.geoms[scene.ngeom]
-        mujoco.mjv_initGeom(g, type=mujoco.mjtGeom.mjGEOM_SPHERE, size=size, pos=b.pos, mat=mat, rgba=BEAD_RGBA)
+        mujoco.mjv_initGeom(g, type=mujoco.mjtGeom.mjGEOM_SPHERE, size=size, pos=b.pos, mat=mat, rgba=rgba)
         g.specular = BEAD_SPECULAR
         g.shininess = BEAD_SHININESS
         g.reflectance = BEAD_REFLECTANCE

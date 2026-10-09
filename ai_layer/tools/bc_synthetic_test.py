@@ -101,7 +101,7 @@ def main() -> None:
         assert stats[IMAGE_KEY]["mean"].shape == (3, 1, 1)
 
         device = "cuda" if torch.cuda.is_available() else "cpu"
-        cfg = build_so101_act_config()
+        cfg = build_so101_act_config(use_overview=False)  # 관절공간 합성 데이터셋은 손목 카메라만 있음
         cfg.device = device
         pre, post = make_act_pre_post_processors(cfg, dataset_stats=stats)
         policy = ACTPolicy(cfg).to(device)

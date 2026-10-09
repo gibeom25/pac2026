@@ -14,6 +14,12 @@ BC teacher 는 train_bc.py 폴더 체크포인트를 bc_inference.load_bc_checkp
 reward_mean, bc_action_distance_mean — BC teacher가 없으면 마지막 값은 null). "RL이 BC를
 얼마나 잘 따라가는지"를 학습 끝난 뒤 plot으로 분석하고 싶다는 요청으로 추가 — so101_seam_env.py의
 step() info["bc_action_distance"](정규화 액션 공간 L2 거리)를 윈도우 평균낸 값.
+
+2026-10-09: --env piper — 실물 Piper 부스를 본뜬 시뮬(envs/piper_seam_env.py, 실제 렌더한 손목 이미지 +
+seam CV 특징 관측). SAC 이미지 입력은 120x160, 리플레이 버퍼는 이미지를 uint8로 저장. BC teacher도 Piper
+규약(플랜지 state)으로 학습한 체크포인트를 줄 것(예: outputs/bc_psim/last). metrics.jsonl에 끝난 에피소드의
+coverage 평균도 쌓는다.
+  PYTHONPATH=. python ai_layer/train_rl.py --env piper --num-steps 200000 --bc-checkpoint outputs/bc_psim/last --out-dir outputs/rl_piper
 """
 
 from __future__ import annotations
@@ -50,6 +56,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--ckpt-every", type=int, default=5000)
     p.add_argument("--bc-checkpoint", default=None, help="train_bc.py 체크포인트 폴더 (R_imitation 용, 선택)")
     p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--env", choices=["so101", "piper"], default="so101",
+                   help="so101: 로봇 팔 없는 기존 리그(이미지 없음), piper: 실물 Piper 부스 시뮬(실제 렌더 이미지)")
+    p.add_argument("--buffer-capacity", type=int, default=None, help="리플레이 버퍼 크기 (기본: SACConfig 값)")
     return p.parse_args()
 
 
@@ -58,15 +67,23 @@ def main() -> None:
     device = "cuda" if torch.cuda.is_available() else "cpu"
     torch.manual_seed(args_cli.seed)
 
-    env = SO101SeamEnv(SO101SeamEnvCfg())
+    if args_cli.env == "piper":
+        from ai_layer.envs.piper_seam_env import SAC_IMAGE_HW, PiperSeamEnv, piper_sac_dataset_stats
+
+        env = PiperSeamEnv()
+        sac_cfg = build_so101_sac_config(*SAC_IMAGE_HW)
+        stats = piper_sac_dataset_stats()
+    else:
+        env = SO101SeamEnv(SO101SeamEnvCfg())
+        sac_cfg = build_so101_sac_config()
+        stats = build_sac_dataset_stats()
     env.set_total_env_steps(args_cli.num_steps)
 
-    sac_cfg = build_so101_sac_config()
     sac_cfg.device = device
     sac_cfg.storage_device = device
     policy = SACPolicy(sac_cfg)
     policy.to(device)
-    preprocessor, _postprocessor = make_sac_pre_post_processors(sac_cfg, dataset_stats=build_sac_dataset_stats())
+    preprocessor, _postprocessor = make_sac_pre_post_processors(sac_cfg, dataset_stats=stats)
 
     bc_policy, bc_pre, bc_post = load_bc_reference(args_cli.bc_checkpoint, device)
     env.set_bc_reference(bc_policy, bc_pre, bc_post)
@@ -80,7 +97,8 @@ def main() -> None:
     if "discrete_critic" in optim_params:
         optimizers["discrete_critic"] = torch.optim.Adam(optim_params["discrete_critic"], lr=sac_cfg.critic_lr)
 
-    buffer = ReplayBuffer(capacity=sac_cfg.online_buffer_capacity, device=device, seed=args_cli.seed)
+    buffer = ReplayBuffer(capacity=args_cli.buffer_capacity or sac_cfg.online_buffer_capacity, device=device,
+                          seed=args_cli.seed, image_uint8=args_cli.env == "piper")
 
     out_dir = Path(args_cli.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -92,6 +110,7 @@ def main() -> None:
     metrics_file = metrics_path.open("a")
     window_rewards: list[float] = []
     window_bc_dists: list[float] = []
+    window_coverage: list[float] = []  # 이번 로그 구간에 끝난 에피소드들의 최종 coverage (piper env만 info에 있음)
 
     def norm_obs(obs: dict) -> dict:
         """관측 dict(배치) -> 정규화 + device. 파이프라인 출력에서 관측 키만 남긴다 (None/스칼라 제거)."""
@@ -118,6 +137,8 @@ def main() -> None:
         if "bc_action_distance" in info:
             window_bc_dists.append(info["bc_action_distance"])
         if truncated or terminated:
+            if "coverage" in info:
+                window_coverage.append(info["coverage"])
             obs, _ = env.reset()
 
         if len(buffer) >= args_cli.batch_size and step >= sac_cfg.online_step_before_learning:
@@ -160,19 +181,24 @@ def main() -> None:
             bc_dist_mean = sum(window_bc_dists) / len(window_bc_dists) if window_bc_dists else None
             critic_loss_val = critic_loss.item()
             critic_loss_json = None if critic_loss_val != critic_loss_val else critic_loss_val  # NaN != NaN
+            cov_mean = sum(window_coverage) / len(window_coverage) if window_coverage else None
             print(
                 f"step={step} critic_loss={critic_loss_val:.4f} reward_mean={reward_mean:.4f}"
                 + (f" bc_action_distance_mean={bc_dist_mean:.4f}" if bc_dist_mean is not None else "")
+                + (f" episode_coverage={cov_mean:.3f} (n={len(window_coverage)})" if cov_mean is not None else ""),
+                flush=True,
             )
             metrics_file.write(json.dumps({
                 "step": step,
                 "critic_loss": critic_loss_json,
                 "reward_mean": reward_mean,
                 "bc_action_distance_mean": bc_dist_mean,
+                "episode_coverage": cov_mean,
             }) + "\n")
             metrics_file.flush()
             window_rewards.clear()
             window_bc_dists.clear()
+            window_coverage.clear()
 
         if step % args_cli.ckpt_every == 0 and step > 0:
             policy.save_pretrained(out_dir / f"sac_step{step:07d}")

@@ -156,6 +156,8 @@ class RealRobotEpisodeTicker:
         if dataset is not None:
             state9 = pose_to_state(pose)
             obs_values = {**dict(zip(STATE_KEYS, state9.tolist())), "wrist": self.last_wrist_frame}
+            if "observation.images.overview" in dataset.features:  # 고정 카메라를 연결했을 때만 저장
+                obs_values["overview"] = obs["overview"]
             action_values = {**dict(zip(ACTION_KEYS[:6], delta6.tolist())), "gripper": bit}
             obs_frame = build_dataset_frame(dataset.features, obs_values, prefix="observation")
             action_frame = build_dataset_frame(dataset.features, action_values, prefix="action")

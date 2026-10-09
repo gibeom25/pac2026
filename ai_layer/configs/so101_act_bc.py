@@ -6,7 +6,7 @@
   - 자유도: 민제씨 PAC_Supermoon URDF(5관절+그리퍼)에 맞춤. IK가 5D(XYZ+roll/pitch)라
     yaw(월드 z 회전 증분)는 학습 타깃에서 0으로 고정 (ZERO_YAW).
   - use_vae = False (1차 버전은 CVAE 없이 결정적 chunk 예측)
-  - 입력: 이미지 1대(wrist) + seam CV 특징(observation.environment_state) + proprioception(observation.state)
+  - 입력: 이미지 2대(wrist + overview) + seam CV 특징(observation.environment_state) + proprioception(observation.state)
   - 출력: EEF-delta 7차원 (dx, dy, dz, drx, dry, drz, gripper). 그리퍼는 유지.
 
 이 프리셋은 lerobot의 ACTPolicy/ACTConfig를 그대로 사용하고, 이 프로젝트의
@@ -43,11 +43,19 @@ ACTION_DIM = 7
 # 이미지 키. lerobot-record가 만드는 키는 "observation.images.<카메라>" (images, 복수형).
 # RL(configs/so101_sac.py)도 같은 키를 쓴다.
 IMAGE_KEY = f"{OBS_IMAGES}.wrist"
+# 2026-10-08: 실물 부스(한쪽이 열린 직육면체 인클로저)에는 손목 카메라 외에 고정 3인칭 카메라가
+# 하나 더 있다. 부스가 여러 개라 이 카메라는 부스마다 위치가 조금씩 다르고 흔들릴 수도 있으며,
+# 시뮬레이션에는 로봇 팔이 없어서(EE-only 리그) 이 시점을 실물처럼 재현할 수 없다 — 그래서
+# "카메라 드롭아웃"으로 쓴다: 시뮬 데이터는 이 칸이 항상 검은 화면(0), 실물 데이터도 학습 때
+# 일정 확률로 0으로 가린다(SO101EEDataset.overview_dropout). 정책은 손목만으로도 동작하고,
+# 고정 카메라는 있으면 참고하는 보조 입력이 된다(π0의 빈 카메라 칸 마스킹과 같은 아이디어).
+OVERVIEW_IMAGE_KEY = f"{OBS_IMAGES}.overview"
 
 
-def build_so101_act_config(camera_height: int = 240, camera_width: int = 320) -> ACTConfig:
+def build_so101_act_config(camera_height: int = 240, camera_width: int = 320, use_overview: bool = True) -> ACTConfig:
+    image_keys = [IMAGE_KEY, OVERVIEW_IMAGE_KEY] if use_overview else [IMAGE_KEY]
     input_features = {
-        IMAGE_KEY: PolicyFeature(type=FeatureType.VISUAL, shape=(3, camera_height, camera_width)),
+        **{k: PolicyFeature(type=FeatureType.VISUAL, shape=(3, camera_height, camera_width)) for k in image_keys},
         OBS_ENV_STATE: PolicyFeature(type=FeatureType.ENV, shape=(SEAM_FEATURE_DIM,)),
         OBS_STATE: PolicyFeature(type=FeatureType.STATE, shape=(STATE_DIM,)),
     }

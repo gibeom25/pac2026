@@ -538,7 +538,9 @@ class CollectTab(QWidget):
 
         combos = [] if is_real else _build_combos(args.scene, args.variant)
         try:
-            dataset = None if args.dry_run else build_dataset_gui(args, self)
+            dataset = None if args.dry_run else build_dataset_gui(
+                args, self, real=is_real, with_overview=is_real and args.real_overview_cam is not None
+            )
             if is_real:
                 sampler = None
             elif args.dry_run:

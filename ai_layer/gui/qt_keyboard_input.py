@@ -14,9 +14,13 @@
 
 from __future__ import annotations
 
+import time
+
 from PyQt6.QtCore import QEvent, QObject
 from PyQt6.QtGui import QKeyEvent
 from PyQt6.QtCore import Qt
+
+from ai_layer.tools.keyboard_input import key_ramp
 
 _KEY_HOLD_MAP: dict[int, str] = {
     Qt.Key.Key_W: "x+", Qt.Key.Key_S: "x-",
@@ -36,7 +40,7 @@ class QtKeyboardEEController(QObject):
 
     def __init__(self):
         super().__init__()
-        self._held: set[str] = set()
+        self._held: dict[str, float] = {}  # 키 이름 -> 누른 시각(perf_counter), 가속 램프용
         self._pending_end = False
         self._pending_discard = False
 
@@ -51,7 +55,7 @@ class QtKeyboardEEController(QObject):
     def _on_press(self, key: int) -> None:
         name = _KEY_HOLD_MAP.get(key)
         if name is not None:
-            self._held.add(name)
+            self._held.setdefault(name, time.perf_counter())
         elif key in _KEY_END_EPISODE:
             self._pending_end = True
         elif key in _KEY_DISCARD:
@@ -60,10 +64,15 @@ class QtKeyboardEEController(QObject):
     def _on_release(self, key: int) -> None:
         name = _KEY_HOLD_MAP.get(key)
         if name is not None:
-            self._held.discard(name)
+            self._held.pop(name, None)
+
+    def _key_value(self, name: str) -> float:
+        t = self._held.get(name)
+        return 0.0 if t is None else key_ramp(time.perf_counter() - t)
 
     def _axis(self, neg: str, pos: str) -> float:
-        return (1.0 if pos in self._held else 0.0) - (1.0 if neg in self._held else 0.0)
+        # 누른 시간에 따라 가속(keyboard_input.key_ramp 참고) — 톡 치면 미세 이동, 길게 누르면 max 속도
+        return self._key_value(pos) - self._key_value(neg)
 
     def poll(self) -> None:
         """Qt 이벤트가 바로바로 들어오므로 폴링이 필요 없다 — 인터페이스 호환용 no-op."""

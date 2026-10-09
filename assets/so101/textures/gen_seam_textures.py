@@ -27,6 +27,10 @@ dashed는 끊기기 전의 연속 곡선(xs,ys)을 그대로 쓴다(seam_cv의 �
 "물리적으로는 끊기지 않은 선"이라는 전제). world 좌표 변환(x_mm,y_mm -> world x,y)은
 envs/seam_ground_truth.py 가 담당 (A4 placement 상수는 거기 한 곳에만 둔다).
 
+2026-10-08: dashed는 json에 점선 패턴 "dash_mm": [on, off]도 같이 저장한다 — path_mm 시작점부터
+누적 호 길이 s(mm)에서 (s mod (on+off)) < on 이면 선이 그려진 구간(_draw_polyline과 같은 규칙).
+tools/generate_demos.py가 이걸로 "점선은 끊어서 그린다"를 재현한다.
+
 실행: python assets/so101/textures/gen_seam_textures.py [--variants N]
 """
 
@@ -115,7 +119,7 @@ def _draw_polyline(draw: ImageDraw.ImageDraw, pts_mm: list[tuple[float, float]],
         cap(seg[-1])
 
 
-# 각 gen_*는 (이미지, ground-truth path_mm (N,2), 선 굵기 mm)를 반환한다.
+# 각 gen_*는 (이미지, ground-truth path_mm (N,2), 선 굵기 mm[, json에 추가로 넣을 dict])를 반환한다.
 def gen_straight(rng: np.random.Generator | None = None) -> tuple[Image.Image, np.ndarray, float]:
     img, draw = _new_canvas()
     y0 = 105.0
@@ -186,7 +190,7 @@ def gen_branch(rng: np.random.Generator | None = None) -> tuple[Image.Image, np.
     return img, np.array(main_pts), main_width
 
 
-def gen_dashed(rng: np.random.Generator | None = None) -> tuple[Image.Image, np.ndarray, float]:
+def gen_dashed(rng: np.random.Generator | None = None) -> tuple[Image.Image, np.ndarray, float, dict]:
     img, draw = _new_canvas()
     x0, x1 = MARGIN_MM, 297 - MARGIN_MM
     xs = np.linspace(x0, x1, 400)
@@ -199,7 +203,7 @@ def gen_dashed(rng: np.random.Generator | None = None) -> tuple[Image.Image, np.
     width_mm = _rand_width(rng, 2.5)
     _draw_polyline(draw, list(zip(xs.tolist(), ys.tolist())), width_mm=width_mm, dash_mm=(on_mm, off_mm))
     # ground truth = 끊기기 전의 연속 곡선 (물리적으로는 안 끊긴 선이라는 전제, 모듈 docstring 참고)
-    return img, np.stack([xs, ys], axis=1), width_mm
+    return img, np.stack([xs, ys], axis=1), width_mm, {"dash_mm": [round(on_mm, 3), round(off_mm, 3)]}
 
 
 VARIANTS = {
@@ -219,11 +223,12 @@ def _variant_seed(name: str, i: int) -> int:
     return int.from_bytes(digest[:4], "little")
 
 
-def _save_path_json(out_png: Path, path_mm: np.ndarray, width_mm: float) -> None:
+def _save_path_json(out_png: Path, path_mm: np.ndarray, width_mm: float, extra: dict | None = None) -> None:
     out_json = out_png.with_suffix(".json")
     out_json.write_text(json.dumps({
         "path_mm": np.asarray(path_mm, dtype=float).round(3).tolist(),
         "width_mm": round(float(width_mm), 3),
+        **(extra or {}),
     }))
 
 
@@ -234,18 +239,18 @@ def main() -> None:
 
     for name, fn in VARIANTS.items():
         # variant 0: 기존 레퍼런스와 동일 (하위호환, a4_weld_seam_<name>.png)
-        img0, path0, width0 = fn(rng=None)
+        img0, path0, width0, *extra0 = fn(rng=None)
         out0 = OUT_DIR / f"a4_weld_seam_{name}.png"
         img0.save(out0)
-        _save_path_json(out0, path0, width0)
+        _save_path_json(out0, path0, width0, *extra0)
         print(f"saved {out0} {img0.size} (+{out0.with_suffix('.json').name}, {len(path0)}pt)")
 
         for i in range(1, args.variants):
             rng = np.random.default_rng(seed=_variant_seed(name, i))
-            img, path, width = fn(rng=rng)
+            img, path, width, *extra = fn(rng=rng)
             out = OUT_DIR / f"a4_weld_seam_{name}_{i}.png"
             img.save(out)
-            _save_path_json(out, path, width)
+            _save_path_json(out, path, width, *extra)
             print(f"saved {out} {img.size} (+{out.with_suffix('.json').name}, {len(path)}pt)")
 
 

@@ -37,12 +37,29 @@ def load_bc_checkpoint(ckpt_dir: str | Path, device: str = "cuda"):
     return policy, preprocessor, postprocessor
 
 
+def fill_missing_images(policy: ACTPolicy, obs: dict) -> dict:
+    """정책 입력 이미지 중 obs에 없는 키를 0 이미지로 채운다 (overview 카메라 드롭아웃 규약)."""
+    missing = [k for k in policy.config.image_features if k not in obs]
+    if not missing:
+        return obs
+    obs = dict(obs)
+    for k in missing:
+        c, h, w = policy.config.image_features[k].shape
+        ref = next((v for v in obs.values() if isinstance(v, torch.Tensor)), None)
+        batched = ref is not None and ref.dim() == 4
+        obs[k] = torch.zeros((ref.shape[0], c, h, w) if batched else (c, h, w), device=ref.device if ref is not None else "cpu")
+    return obs
+
+
 @torch.no_grad()
 def predict_chunk(policy: ACTPolicy, preprocessor, postprocessor, obs: dict[str, torch.Tensor]) -> torch.Tensor:
     """관측(배치 or 단일) -> 비정규화된 액션 청크 (B, chunk, 7) [dxyz, drotvec, gripper], CPU 텐서.
 
     obs 키: observation.images.wrist (3,H,W float[0,1]), observation.state (9,), observation.environment_state (5,)
+    (+ 2026-10-08: observation.images.overview — 정책이 쓰는데 obs에 없으면 검은 화면으로 채운다.
+    학습 때 overview 드롭아웃으로 "없음 = 0"을 배웠으므로 고정 카메라가 없거나 끊겨도 그대로 동작.)
     """
+    obs = fill_missing_images(policy, obs)
     batch = preprocessor(dict(obs))
     chunk = policy.predict_action_chunk(batch)  # (B, chunk, 7) 정규화 공간
     b, t, d = chunk.shape

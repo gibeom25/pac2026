@@ -13,6 +13,14 @@ R_coverage(2026-09-23 추가, 기범): "선이 얼마나 덮였는지 / 안 덮�
 "용접선을 얼마나 깨끗하게 완주했는가"에 가장 가까운 항. 희소 신호(새로 덮은 구간에서만 양의 보상)라
 기존 조밀한 track_reward를 대체하지 않고 추가 항으로 합산한다(대체하면 학습 초반 그라디언트가 너무
 약해짐).
+
+2026-10-08: 점선 규약을 데이터 생성기(tools/generate_demos.py --dashed cut)와 맞췄다 — 점선은 선이
+끊긴 구간에서 분사를 멈추는 게 정답이다. coverage_reward에 paint_mask(칠해야 하는 점)/gap_mask
+(칠하면 안 되는 점)를 넘기면:
+  - 칠해야 하는 점만 coverage 대상이 되고, **트리거가 켜진 상태로 지나가야** 덮은 것으로 친다
+    (예전엔 트리거와 무관하게 근처를 지나가기만 해도 덮은 걸로 쳐서, 분사 자체에 대한 양의 보상이
+    없었다 — docstring의 "방문(도포)"과 실제 코드가 어긋나 있던 것도 같이 고침).
+  - 끊긴 구간 안쪽에서 분사하면 gap_penalty만큼 감점.
 """
 
 from __future__ import annotations
@@ -119,6 +127,9 @@ def coverage_reward(
     gripper_active: torch.Tensor,
     coverage_radius: float = 0.008,
     off_target_penalty_scale: float = 2.0,
+    paint_mask: torch.Tensor | None = None,
+    gap_mask: torch.Tensor | None = None,
+    gap_penalty: float = 0.02,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """R_coverage = 새로 덮은 비율(recall 증가분) - 도포 중 선 밖에 있었던 정도(precision 위반).
 
@@ -135,23 +146,33 @@ def coverage_reward(
 
     Args:
         gripper_active: (N,) 0/1 (또는 bool) — 이번 스텝에 실제로 도포(비드 증착)가 일어났는지.
+        paint_mask: (N, K) bool — 칠해야 하는 샘플点 (None이면 전부, 즉 연속 선)
+        gap_mask: (N, K) bool — 칠하면 안 되는 샘플点 (점선의 끊긴 구간 안쪽, None이면 없음)
     Returns:
         reward: (N,)
         new_coverage_mask: (N, K) — 다음 스텝에 그대로 넘길 것 (에피소드 끝나면 새로 초기화).
     """
+    if paint_mask is None:
+        paint_mask = torch.ones_like(coverage_mask)
+    active = gripper_active.bool().unsqueeze(-1)  # (N, 1)
     dists = (eef_pos.unsqueeze(1) - target_polyline).norm(dim=-1)  # (N, K)
-    visited_now = dists <= coverage_radius  # (N, K)
+    visited_now = (dists <= coverage_radius) & paint_mask & active  # (N, K) 칠할 곳을 분사하며 지남
     newly_covered = visited_now & (~coverage_mask)
     new_mask = coverage_mask | visited_now
 
-    k = target_polyline.shape[1]
-    coverage_gain = newly_covered.float().sum(dim=-1) / max(k, 1)  # (N,)
+    n_paint = paint_mask.float().sum(dim=-1).clamp_min(1.0)
+    coverage_gain = newly_covered.float().sum(dim=-1) / n_paint  # (N,)
 
-    min_dist = dists.min(dim=-1).values  # (N,)
+    # 선 밖 분사: 칠해야 하는 점까지의 최단거리 기준 (점선 끊긴 구간은 아래 gap 패널티가 따로 본다)
+    min_dist = dists.masked_fill(~paint_mask, float("inf")).min(dim=-1).values  # (N,)
     off_target_excess = (min_dist - coverage_radius).clamp_min(0.0)
     off_target_penalty = gripper_active.float() * off_target_excess
 
     reward = coverage_gain - off_target_penalty_scale * off_target_penalty
+    if gap_mask is not None:
+        nearest = dists.argmin(dim=-1, keepdim=True)  # (N, 1)
+        in_gap = gap_mask.gather(1, nearest).squeeze(1)
+        reward = reward - gap_penalty * (gripper_active.float() * in_gap.float())
     return reward, new_mask
 
 
@@ -204,12 +225,18 @@ def total_reward(
     coverage_radius: float = 0.008,
     off_target_penalty_scale: float = 2.0,
     dim_weights: torch.Tensor | None = None,
+    coverage_points: torch.Tensor | None = None,
+    paint_mask: torch.Tensor | None = None,
+    gap_mask: torch.Tensor | None = None,
+    gap_penalty: float = 0.02,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """action_rl / action_bc / action_tm1 은 모두 같은 스케일(env 정규화 [-1,1])이어야 한다.
 
     coverage_mask: (N, K) bool, 에피소드 시작 시 전부 False로 호출 측이 초기화 — coverage_reward
     참고. gripper_active: (N,) 이번 스텝 실제 도포 여부(0/1 또는 bool). dim_weights는
     imitation_reward/smoothness_reward로 그대로 전달(회전 성분 가중치 낮추기용, 2026-10-06).
+    coverage_points: (N, M, 3) coverage 보상 전용 촘촘한 경로 (None이면 target_polyline 사용) —
+    paint_mask/gap_mask/coverage_mask는 이 점들 기준. coverage_reward 참고 (2026-10-08, 점선 규약).
 
     Returns:
         reward, new_progress, new_coverage_mask
@@ -222,8 +249,9 @@ def total_reward(
     )
     r_smooth = smoothness_reward(action_rl, action_tm1, dim_weights)
     r_coverage, new_coverage_mask = coverage_reward(
-        eef_pos, target_polyline, coverage_mask, gripper_active,
+        eef_pos, target_polyline if coverage_points is None else coverage_points, coverage_mask, gripper_active,
         coverage_radius=coverage_radius, off_target_penalty_scale=off_target_penalty_scale,
+        paint_mask=paint_mask, gap_mask=gap_mask, gap_penalty=gap_penalty,
     )
     reward = w1 * r_imit + w2 * r_track + w3 * r_smooth + w4 * r_coverage
     return reward, new_progress, new_coverage_mask

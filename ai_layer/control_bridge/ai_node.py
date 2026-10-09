@@ -32,7 +32,7 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from ai_layer.configs.so101_act_bc import CHUNK_SIZE, DT_AI_SEC, IMAGE_KEY  # noqa: E402
+from ai_layer.configs.so101_act_bc import CHUNK_SIZE, DT_AI_SEC, IMAGE_KEY, OVERVIEW_IMAGE_KEY  # noqa: E402
 from ai_layer.control_bridge.chunk_builder import (  # noqa: E402
     BuildStats,
     ChunkLimits,
@@ -101,6 +101,29 @@ class RealSenseImageSource(ImageSource):
 
     def close(self) -> None:
         self.pipe.stop()
+
+
+class OpenCVImageSource(ImageSource):
+    """일반 USB 카메라(부스의 고정 overview 카메라). 학습 해상도(320x240)로 맞춰서 RGB로 돌려준다."""
+
+    def __init__(self, index: int, w: int = 320, h: int = 240) -> None:
+        import cv2
+
+        self.cv2 = cv2
+        self.size = (w, h)
+        self.cap = cv2.VideoCapture(index)
+        if not self.cap.isOpened():
+            raise RuntimeError(f"카메라 index {index}를 열 수 없다")
+
+    def get(self) -> tuple[np.ndarray, int]:
+        ok, bgr = self.cap.read()
+        t = time.monotonic_ns()
+        if not ok:
+            raise RuntimeError("overview 카메라 프레임 읽기 실패")
+        return self.cv2.cvtColor(self.cv2.resize(bgr, self.size), self.cv2.COLOR_BGR2RGB), t
+
+    def close(self) -> None:
+        self.cap.release()
 
 
 # ----------------------------------------------------------------------------- 스냅샷 소스
@@ -252,10 +275,14 @@ class AiNode:
         n_steps: int | None = None,
         limits: ChunkLimits | None = None,
         verbose: bool = True,
+        overview_images: ImageSource | None = None,
     ) -> None:
         self.predictor = predictor
         self.snapshots = snapshots
         self.images = images
+        # 없으면 정책 입력의 overview 칸은 bc_inference.fill_missing_images가 0으로 채운다
+        # (학습 때 overview 드롭아웃으로 "고정 카메라 없음"도 배웠음)
+        self.overview_images = overview_images
         self.sink = sink
         self.anchor_prefer = anchor_prefer
         self.policy_id = policy_id
@@ -285,6 +312,9 @@ class AiNode:
             OBS_STATE: choice.state9,
             OBS_ENV_STATE: seam,
         }
+        if self.overview_images is not None:
+            ov, _ = self.overview_images.get()
+            obs[OVERVIEW_IMAGE_KEY] = np.transpose(ov.astype(np.float32) / 255.0, (2, 0, 1))
         model_chunk = self.predictor.predict(obs)
         infer_ms = (time.monotonic() - t0) * 1e3
         self.infer_ms_hist.append(infer_ms)
@@ -336,6 +366,8 @@ class AiNode:
     def close(self) -> None:
         self.snapshots.close()
         self.images.close()
+        if self.overview_images is not None:
+            self.overview_images.close()
         self.sink.close()
         if self.infer_ms_hist:
             a = np.array(self.infer_ms_hist)
@@ -353,6 +385,8 @@ def main() -> None:
     ap.add_argument("--dry-run", action="store_true", help="ZeroMQ 로 보내지 않고 인코딩까지만")
     ap.add_argument("--fake-snapshot", action="store_true", help="제어 계층 없이 가짜 스냅샷 사용")
     ap.add_argument("--camera", choices=["blank", "realsense"], default="blank")
+    ap.add_argument("--overview-index", type=int, default=None,
+                    help="부스 고정(overview) 카메라 OpenCV index. 없으면 그 입력은 검은 화면(0)으로 들어간다")
     ap.add_argument("--anchor", choices=["obs", "commit"], default="commit")
     ap.add_argument("--policy-id", type=int, default=1, help="chunk_policy.json 의 policy_id (1 = seam-welding)")
     ap.add_argument("--eef-mode", choices=[m.value for m in EefMode], default=EefMode.OFF.value)
@@ -373,6 +407,7 @@ def main() -> None:
         anchor_prefer=AnchorMode.COMMIT_END if args.anchor == "commit" else AnchorMode.OBS_POSE,
         policy_id=args.policy_id, eef_mode=EefMode(args.eef_mode), eef_threshold=args.eef_threshold,
         n_steps=args.n_steps, verbose=not args.quiet,
+        overview_images=OpenCVImageSource(args.overview_index) if args.overview_index is not None else None,
     )
     print(f"[ai-node] predictor={'ACT:' + args.checkpoint if args.checkpoint else 'zero'} "
           f"snapshots={'fake' if args.fake_snapshot else args.snapshot_endpoint} "

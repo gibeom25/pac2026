@@ -51,6 +51,21 @@ import time
 # 보통 400~600ms)을 덮을 만큼 넉넉하게 잡음 — 너무 짧으면 누르고 있어도 반복 시작 전 짧은
 # 공백 동안 "뗐다"로 깜빡여서 움직임이 끊겨 보인다.
 _HOLD_TIMEOUT_S = 0.6
+# 2026-10-08: 키 반복이 이미 들어오고 있는 키(= 확실히 누르고 있는 중)는 반복 간격(보통 30~40ms)만
+# 덮으면 되므로 훨씬 짧게 본다 — 0.6s를 그대로 쓰면 손을 뗀 뒤에도 0.6초 동안 계속 움직여서
+# 원하는 자리를 지나쳐버렸다("반응성이 너무 크다").
+_REPEAT_TIMEOUT_S = 0.12
+
+# 2026-10-08: 키보드는 조이스틱 스틱과 달리 0/1뿐이라 누르는 즉시 최대 속도가 나와 미세 조정이
+# 안 됐다 — 누르고 있는 시간에 따라 KEY_RAMP_MIN -> 1.0으로 선형 가속한다(짧게 톡 = 미세 이동,
+# 길게 누름 = max 속도). qt_keyboard_input.py도 같은 함수를 쓴다.
+KEY_RAMP_MIN = 0.15
+KEY_RAMP_S = 1.0
+
+
+def key_ramp(held_s: float) -> float:
+    """누른 지 held_s초 된 키의 속도 배율(0~1)."""
+    return KEY_RAMP_MIN + (1.0 - KEY_RAMP_MIN) * min(1.0, held_s / KEY_RAMP_S)
 
 _KEY_X_POS = "w"
 _KEY_X_NEG = "s"
@@ -102,6 +117,8 @@ class KeyboardEEController:
 
         self._lock = threading.Lock()
         self._last_seen: dict[str, float] = {}
+        self._press_start: dict[str, float] = {}
+        self._repeating: set[str] = set()
         self._pending_end = False
         self._pending_discard = False
         self._stop = threading.Event()
@@ -130,19 +147,37 @@ class KeyboardEEController:
         ch = ch.lower()
         with self._lock:
             if ch in _HOLD_KEYS:
-                self._last_seen[ch] = time.perf_counter()
+                now = time.perf_counter()
+                if self._held_duration_locked(ch, now) is None:
+                    self._press_start[ch] = now
+                    self._repeating.discard(ch)
+                else:
+                    self._repeating.add(ch)
+                self._last_seen[ch] = now
             elif ch in _KEY_END_EPISODE:
                 self._pending_end = True
             elif ch in _KEY_DISCARD:
                 self._pending_discard = True
 
+    def _held_duration_locked(self, ch: str, now: float) -> float | None:
+        """누르고 있으면 누른 지 몇 초인지, 뗐으면 None. self._lock을 잡은 상태에서 부를 것."""
+        t = self._last_seen.get(ch)
+        timeout = _REPEAT_TIMEOUT_S if ch in self._repeating else _HOLD_TIMEOUT_S
+        if t is None or (now - t) >= timeout:
+            return None
+        return now - self._press_start[ch]
+
     def _held(self, ch: str) -> bool:
         with self._lock:
-            t = self._last_seen.get(ch)
-        return t is not None and (time.perf_counter() - t) < _HOLD_TIMEOUT_S
+            return self._held_duration_locked(ch, time.perf_counter()) is not None
+
+    def _key_value(self, ch: str) -> float:
+        with self._lock:
+            d = self._held_duration_locked(ch, time.perf_counter())
+        return 0.0 if d is None else key_ramp(d)
 
     def _axis(self, neg_ch: str, pos_ch: str) -> float:
-        return (1.0 if self._held(pos_ch) else 0.0) - (1.0 if self._held(neg_ch) else 0.0)
+        return self._key_value(pos_ch) - self._key_value(neg_ch)
 
     def poll(self) -> None:
         """백그라운드 스레드가 비동기로 바로 읽으므로 폴링이 필요 없다 — 인터페이스 호환용 no-op."""

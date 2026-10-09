@@ -1,0 +1,24 @@
+[project]
+name = "pac2026-dataset"
+version = "0.1.0"
+description = "SO-101 seam-welding: MuJoCo data collection, BC(ACT) and RL(SAC) training"
+requires-python = ">=3.10,<3.11"
+dependencies = [
+    "lerobot[feetech,kinematics]==0.4.4",
+    # placo/pin wheels link against urdfdom 4 / tinyxml2 10; newer versions break import
+    "cmeel-urdfdom>=4,<5",
+    "cmeel-tinyxml2>=10,<11",
+    # seam_cv
+    "scipy>=1.11",
+    "scikit-image>=0.22",
+    # MuJoCo sim + joystick
+    "mujoco>=3.1",
+    "gymnasium>=0.29",
+    "evdev",
+    # PyQt6 collection/training GUI
+    "PyQt6",
+    "pyqtgraph",
+]
+
+[tool.uv]
+package = false

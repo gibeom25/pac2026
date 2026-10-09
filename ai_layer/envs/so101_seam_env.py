@@ -31,6 +31,12 @@ placeholder, 아래 "1차 버전 범위" 참고 — 바꿀 필요가 없다).
     즉시 terminated=True + 큰 음의 보상 — teleoperation에서 자동 폐기되는 것과 같은 조건을
     RL에서는 에피소드 종료로 반영한다.
 
+점선(2026-10-08): 데이터 생성기(tools/generate_demos.py --dashed cut)와 같은 규약 — 점선은 선이
+끊긴 구간에서 분사를 멈추는 게 정답이다. coverage 보상은 load()의 20점(관측 lookahead/track용)
+대신 cfg.coverage_spacing 간격의 촘촘한 점(seam_gt.coverage_points)으로 계산하고, 칠해야 하는
+점만 덮을 대상, 끊긴 구간 안쪽 분사는 cfg.gap_penalty 감점(rl/reward.py coverage_reward 참고).
+cfg.dashed="bridge"면 예전처럼 연속 선으로 본다.
+
 1차 버전 범위(이전 버전에서 유지): 카메라는 아직 관측에 안 쓴다(RL 스텝마다 렌더링하면 비용이
 커서 observation.images.wrist는 0 placeholder) — BC teacher도 같은 키를 받으므로 형태만
 맞추면 된다. 실제 렌더 연동은 후속 작업.
@@ -48,6 +54,7 @@ import torch
 
 from lerobot.utils.rotation import Rotation
 
+from ai_layer.bc_inference import fill_missing_images
 from ai_layer.configs.so101_sac import CONTINUOUS_ACTION_DIM, IMAGE_KEY
 from ai_layer.envs.seam_ground_truth import N_VARIANTS, SCENE_NAMES, SeamGroundTruth
 from ai_layer.kinematics import pose_to_state, pose_to_xyzrotvec
@@ -112,6 +119,9 @@ class SO101SeamEnvCfg:
     coverage_radius: float = 0.008  # reward.coverage_reward와 동일 — "덮었다"로 치는 반경
     off_seam_safety_dist: float = 0.03  # 이거보다 멀면 트리거를 눌러도 비드 강제 OFF (안전 컷오프)
     floor_contact_penalty: float = 5.0  # 바닥/용지 접촉 시 추가 음의 보상(막대 하나 스케일보다 훨씬 큼)
+    dashed: str = "cut"  # 점선: cut=끊긴 구간에서 분사 멈춤(생성기 기본값과 동일), bridge=연속 선으로 봄
+    coverage_spacing: float = 0.001  # coverage 보상용 경로 점 간격 [m] — 점선 끊긴 구간(3~16mm)을 표현할 만큼 촘촘하게
+    gap_penalty: float = 0.02  # 끊긴 구간 안쪽에서 분사한 스텝당 감점 (coverage 이득 한 스텝분과 비슷한 크기)
 
     # 2026-10-06: "회전은 데이터셋에 저장은 하되 RL은 회전을 덜 참고하게" — imitation_reward/
     # smoothness_reward 계산에서 회전 성분(drx,dry,drz)에 곱할 가중치. 1.0이면 위치와 동등(이전
@@ -156,7 +166,10 @@ class SO101SeamEnv(gym.Env):
         self._path_curvature = 0.0
         self._path_thickness = 1.0
         self._prev_progress = 0.0
-        self._coverage_mask = torch.zeros(1, PATH_NUM_POINTS, dtype=torch.bool)
+        self._coverage_points = torch.zeros(1, 1, 3)  # reset()에서 에피소드 경로로 채움
+        self._paint_mask = torch.ones(1, 1, dtype=torch.bool)
+        self._gap_mask = torch.zeros(1, 1, dtype=torch.bool)
+        self._coverage_mask = torch.zeros(1, 1, dtype=torch.bool)
         self._prev_action = np.zeros(CONTINUOUS_ACTION_DIM)
         self._weight_schedule = WeightSchedule()
         self._bc = None  # (policy, preprocessor, postprocessor)
@@ -203,6 +216,7 @@ class SO101SeamEnv(gym.Env):
             return None
         policy, pre, post = self._bc
         with torch.no_grad():
+            obs = fill_missing_images(policy, obs)  # overview 카메라 칸 — 시뮬엔 없으므로 0 (BC 학습 규약과 같음)
             batch = pre(dict(obs)) if pre is not None else dict(obs)
             chunk = policy.predict_action_chunk(batch)  # (1, chunk, 7)
             first = post(chunk[:, 0, :]) if post is not None else chunk[:, 0, :].cpu()
@@ -246,6 +260,10 @@ class SO101SeamEnv(gym.Env):
             base_speed=self.cfg.target_speed_base,
             coverage_radius=self.cfg.coverage_radius,
             dim_weights=self._action_dim_weights,
+            coverage_points=self._coverage_points,
+            paint_mask=self._paint_mask,
+            gap_mask=self._gap_mask,
+            gap_penalty=self.cfg.gap_penalty,
         )
         self._prev_progress = new_progress_t.item()
         self._coverage_mask = new_coverage_mask
@@ -266,9 +284,14 @@ class SO101SeamEnv(gym.Env):
         variant = int(self._rng.integers(0, N_VARIANTS))
         self._target_polyline, self._path_curvature, self._path_thickness = self.seam_gt.load(scene, variant)
 
+        pts, paint, gap = self.seam_gt.coverage_points(scene, variant, self.cfg.coverage_spacing, self.cfg.dashed)
+        self._coverage_points = torch.from_numpy(pts).unsqueeze(0)
+        self._paint_mask = torch.from_numpy(paint).unsqueeze(0)
+        self._gap_mask = torch.from_numpy(gap).unsqueeze(0)
+
         self._prev_progress = 0.0
         self._prev_action = np.zeros(CONTINUOUS_ACTION_DIM)
-        self._coverage_mask = torch.zeros(1, PATH_NUM_POINTS, dtype=torch.bool)
+        self._coverage_mask = torch.zeros_like(self._paint_mask)
         self._episode_step = 0
 
         obs = self._get_observations()

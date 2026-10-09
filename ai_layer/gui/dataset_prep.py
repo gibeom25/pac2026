@@ -26,9 +26,15 @@ class DatasetCancelled(Exception):
     """사용자가 덮어쓰기 확인 다이얼로그에서 취소를 눌렀을 때."""
 
 
-def build_dataset_gui(args: argparse.Namespace, parent: QWidget | None = None) -> LeRobotDataset:
+def build_dataset_gui(
+    args: argparse.Namespace, parent: QWidget | None = None, real: bool = False, with_overview: bool = False
+) -> LeRobotDataset:
+    """real=True면 robot_type을 실로봇으로 표시하고, with_overview=True면 고정(overview) 카메라도
+    observation.images.overview로 저장한다(2026-10-08, configs/so101_act_bc.OVERVIEW_IMAGE_KEY 참고)."""
     hw_obs = {name: float for name in STATE_KEYS}
     hw_obs["wrist"] = CAMERA_HW
+    if with_overview:
+        hw_obs["overview"] = CAMERA_HW
     hw_action = {name: float for name in ACTION_KEYS}
     obs_features = hw_to_dataset_features(hw_obs, "observation", use_video=False)
     action_features = hw_to_dataset_features(hw_action, "action", use_video=False)
@@ -60,6 +66,7 @@ def build_dataset_gui(args: argparse.Namespace, parent: QWidget | None = None) -
         fps=args.fps,
         features=features,
         root=root,
-        robot_type="so101_ee_mujoco_joystick",
+        # "_ee_"가 들어가야 data.detect_dataset_kind가 EE-native 포맷으로 인식한다
+        robot_type="so101_ee_real_joystick" if real else "so101_ee_mujoco_joystick",
         use_videos=False,
     )
