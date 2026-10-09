@@ -67,8 +67,12 @@ class ChunkBuffer:
         return int(self._steps.shape[0])
 
     @property
-    def _safe_zone_end(self) -> int:
-        return max(1, int(self.n * self.safe_zone_frac))
+    def _safe_zone_end(self) -> float:
+        """2026-10-10: 예전엔 int()로 정수 스텝까지 반올림했는데, anchor_resync가 많이 스킵해서
+        남은 스텝 n이 작아지면(예: n=2) 반올림 오차가 커진다(int(2*0.667)=1 -> 의도한 2/3 지점이
+        아니라 50% 지점에서 DRAINING 시작). _integrate_to/tail_elapsed 둘 다 이미 소수 스텝
+        인덱스를 지원하므로, float 그대로 둬서 반올림 오차 자체를 없앤다."""
+        return max(1.0, self.n * self.safe_zone_frac)
 
     def _nominal_progress(self, now_ns: int) -> float:
         """DRAINING 없이 그대로 쭉 재생했다면 지금쯤 몇 번째 스텝(소수 가능)일지."""
