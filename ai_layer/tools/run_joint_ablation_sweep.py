@@ -5,7 +5,7 @@
 맞췄다.
 
 실행:
-    PYTHONPATH=. python ai2ctrl_layer/run_joint_ablation_sweep.py --duration 4 \
+    PYTHONPATH=. python ai_layer/tools/run_joint_ablation_sweep.py --duration 4 \
         --out docs/ablation_results/joint_sweep.csv
 """
 
@@ -15,7 +15,7 @@ import argparse
 import csv
 import sys
 
-from ai2ctrl_layer.joint_dynamics_bench import AblationConfig, run_joint_benchmark
+from ai_layer.tools.joint_dynamics_bench import AblationConfig, run_joint_benchmark
 
 PROPOSED = dict(anchor_level="commit_refine", buffer_baseline=False, trigger_baseline=False, use_corrector=True)
 

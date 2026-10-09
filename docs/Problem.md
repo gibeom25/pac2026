@@ -118,7 +118,7 @@
 
 ## 구현 완료 — 기존 코드와의 차이점
 
-`ai2ctrl_layer/`에 실제로 구현(`chunk_buffer.py`/`anchor_resync.py`/`trigger_logic.py`/`open_loop_corrector.py`/`interface_benchmark.py`)한 뒤, 기존 코드와 정확히 뭐가 다른지 정리한다.
+`ai_layer/control_bridge/`(`chunk_buffer.py`/`anchor_resync.py`/`trigger_logic.py`/`open_loop_corrector.py`)와 `ai_layer/tools/`(`interface_benchmark.py`)에 실제로 구현한 뒤, 기존 코드와 정확히 뭐가 다른지 정리한다.
 
 **2/4/8 — `anchor_resync.resync_start_index()` vs 기존 `choose_anchor()`**
 | | 기존 `choose_anchor()` | 신규 `anchor_resync.resync_start_index()` |

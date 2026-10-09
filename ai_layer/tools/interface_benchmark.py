@@ -9,8 +9,8 @@ ChunkPredictor 프로토콜을 그대로 통과시키고, PointMass 쪽(이 파�
 제어 계층에 옮길 때 점-물리 부분만 떼어내면 된다.
 
 사용 예:
-    PYTHONPATH=. python ai2ctrl_layer/interface_benchmark.py --out /tmp/bench_proposed.csv
-    PYTHONPATH=. python ai2ctrl_layer/interface_benchmark.py --anchor none --buffer-baseline --trigger-baseline \
+    PYTHONPATH=. python ai_layer/tools/interface_benchmark.py --out /tmp/bench_proposed.csv
+    PYTHONPATH=. python ai_layer/tools/interface_benchmark.py --anchor none --buffer-baseline --trigger-baseline \
         --no-corrector --out /tmp/bench_baseline.csv
 """
 
@@ -44,10 +44,10 @@ from ai_layer.control_bridge.protocol import (
 )
 from ai_layer.configs.so101_act_bc import IMAGE_KEY, SEAM_FEATURE_DIM
 from ai_layer.rl.reward import _point_to_polyline
-from ai2ctrl_layer.anchor_resync import resync_start_index
-from ai2ctrl_layer.chunk_buffer import ChunkBuffer
-from ai2ctrl_layer.open_loop_corrector import ConstantVelocityKF
-from ai2ctrl_layer.trigger_logic import TriggerLogic
+from ai_layer.control_bridge.anchor_resync import resync_start_index
+from ai_layer.control_bridge.chunk_buffer import ChunkBuffer
+from ai_layer.control_bridge.open_loop_corrector import ConstantVelocityKF
+from ai_layer.control_bridge.trigger_logic import TriggerLogic
 
 
 # --------------------------------------------------------------------------- 참조 경로

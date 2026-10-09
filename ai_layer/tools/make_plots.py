@@ -2,7 +2,7 @@
 """docs/Experiment_Plan.md "결과" 섹션용 그래프 생성 — baseline/proposed를 직접 돌려서(CSV 재로드
 없이, raw_path 같은 복합 필드를 그대로 메모리에서 씀) 한 번에 전부 그린다.
 
-실행: PYTHONPATH=. python ai2ctrl_layer/make_plots.py --out-dir docs/ablation_results
+실행: PYTHONPATH=. python ai_layer/tools/make_plots.py --out-dir docs/ablation_results
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
-from ai2ctrl_layer.interface_benchmark import AblationConfig, bent_polyline, run_benchmark
+from ai_layer.tools.interface_benchmark import AblationConfig, bent_polyline, run_benchmark
 
 BASELINE_CFG = AblationConfig(anchor_level="none", buffer_baseline=True, trigger_baseline=True, use_corrector=False)
 PROPOSED_CFG = AblationConfig(anchor_level="commit_refine", buffer_baseline=False, trigger_baseline=False, use_corrector=True)

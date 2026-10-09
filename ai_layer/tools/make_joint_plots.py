@@ -2,7 +2,7 @@
 """joint_dynamics_bench.py 결과 그래프 — docs/Experiment_Plan.md "조인트 동역학 검증" 섹션용.
 처음부터 영어로 쓴다(이전 세션에서 matplotlib 기본 폰트가 한글 글리프를 못 그려 깨진 적 있음).
 
-실행: PYTHONPATH=. python ai2ctrl_layer/make_joint_plots.py --out-dir docs/ablation_results
+실행: PYTHONPATH=. python ai_layer/tools/make_joint_plots.py --out-dir docs/ablation_results
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
-from ai2ctrl_layer.joint_dynamics_bench import AblationConfig, run_joint_benchmark
+from ai_layer.tools.joint_dynamics_bench import AblationConfig, run_joint_benchmark
 
 BASELINE_CFG = AblationConfig(anchor_level="none", buffer_baseline=True, trigger_baseline=True, use_corrector=False)
 PROPOSED_CFG = AblationConfig(anchor_level="commit_refine", buffer_baseline=False, trigger_baseline=False, use_corrector=True)

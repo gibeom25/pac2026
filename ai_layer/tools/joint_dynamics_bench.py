@@ -29,8 +29,8 @@ point-mass 버전은 `buffer.next_step()`이 내놓는 목표를 그대로 "진�
     (실측 확인).
 
 사용 예:
-    PYTHONPATH=. python ai2ctrl_layer/joint_dynamics_bench.py --out /tmp/joint_proposed.csv
-    PYTHONPATH=. python ai2ctrl_layer/joint_dynamics_bench.py --anchor none --no-corrector \
+    PYTHONPATH=. python ai_layer/tools/joint_dynamics_bench.py --out /tmp/joint_proposed.csv
+    PYTHONPATH=. python ai_layer/tools/joint_dynamics_bench.py --anchor none --no-corrector \
         --out /tmp/joint_baseline.csv
 """
 
@@ -50,7 +50,7 @@ from ai_layer.control_bridge.ai_node import AiNode, BlankImageSource
 from ai_layer.control_bridge.chunk_builder import EefMode
 from ai_layer.control_bridge.protocol import AnchorMode
 from ai_layer.rl.reward import _point_to_polyline
-from ai2ctrl_layer.interface_benchmark import (
+from ai_layer.tools.interface_benchmark import (
     AblationConfig,
     MockGroundTruthPredictor,
     PointMassChunkSink,
@@ -59,7 +59,7 @@ from ai2ctrl_layer.interface_benchmark import (
     bent_polyline,
 )
 
-ASSETS_DIR = Path(__file__).resolve().parents[1] / "assets" / "so101"
+ASSETS_DIR = Path(__file__).resolve().parents[2] / "assets" / "so101"
 MJCF_PATH = ASSETS_DIR / "scene.xml"
 ARM_JOINT_NAMES = ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll"]
 EE_SITE_NAME = "gripperframe"

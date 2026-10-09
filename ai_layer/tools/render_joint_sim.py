@@ -26,7 +26,7 @@ joint_dynamics_bench.py/run_joint_benchmark()를 그대로 쓰지 않고 따로 
 틱 스레드).
 
 실행:
-    PYTHONPATH=. python ai2ctrl_layer/render_joint_sim.py --duration 26 --seed 1
+    PYTHONPATH=. python ai_layer/tools/render_joint_sim.py --duration 26 --seed 1
 """
 
 from __future__ import annotations
@@ -46,7 +46,7 @@ from ai_layer.control_bridge.chunk_builder import EefMode
 from ai_layer.control_bridge.protocol import AnchorMode
 from ai_layer.rl.reward import _point_to_polyline
 from ai_layer.tools.record_mujoco import BEAD_RGBA, BeadDrop, _draw_bead_trail
-from ai2ctrl_layer.interface_benchmark import (
+from ai_layer.tools.interface_benchmark import (
     AblationConfig,
     MockGroundTruthPredictor,
     PointMassChunkSink,
@@ -54,7 +54,7 @@ from ai2ctrl_layer.interface_benchmark import (
     PointMassWorld,
     bent_polyline,
 )
-from ai2ctrl_layer.joint_dynamics_bench import SO101Plant
+from ai_layer.tools.joint_dynamics_bench import SO101Plant
 
 OUT_DIR = Path("docs/ablation_results")
 CAMERA_HW = (480, 640)

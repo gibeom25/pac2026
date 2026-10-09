@@ -6,7 +6,7 @@
 3) 코너 각도 스윕(완만~급격)으로 난이도별 일반화 확인
 
 실행:
-    PYTHONPATH=. python ai2ctrl_layer/run_ablation_sweep.py --duration 8 --out docs/ablation_results.csv
+    PYTHONPATH=. python ai_layer/tools/run_ablation_sweep.py --duration 8 --out docs/ablation_results.csv
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ import argparse
 import csv
 import sys
 
-from ai2ctrl_layer.interface_benchmark import AblationConfig, run_benchmark
+from ai_layer.tools.interface_benchmark import AblationConfig, run_benchmark
 
 PROPOSED = dict(anchor_level="commit_refine", buffer_baseline=False, trigger_baseline=False, use_corrector=True)
 

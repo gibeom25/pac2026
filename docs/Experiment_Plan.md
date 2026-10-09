@@ -140,7 +140,7 @@ AI 추론(`AiNode.run()`)과 제어 틱(point 갱신 스레드)을 **실제로 �
 
 ---
 
-## 결과 (`ai2ctrl_layer/run_ablation_sweep.py`, seed=1, 5초/설정, noise_std=0.5mm 기본)
+## 결과 (`ai_layer/tools/run_ablation_sweep.py`, seed=1, 5초/설정, noise_std=0.5mm 기본)
 
 `docs/ablation_results/sweep.csv`에 원본 저장. 측정 중 잡은 버그 2개: (1) 센서 노이즈를 처음엔
 전혀 안 넣어서 `OpenLoopCorrector`/`TriggerLogic`의 효과가 다른 설정과 구분이 안 됐다 — 노이즈
@@ -183,7 +183,7 @@ CPU를 먹었다 — 코너가 급격해질수록 지터가 커지는 것처럼 
 - **이음매 길이 / 추종 속도는 잘 일반화된다** — 짧은 이음매(10cm)든 긴 이음매(2m)든, 느린 속도든 빠른 속도(0.16m/s, 기본값의 8배)든 역행이 사실상 발생하지 않는다. 다만 `speed=0.16m/s`에서 제어 틱 최대 지터가 순간적으로 치솟는 현상이 관측됐다(다른 설정은 수 ms대인데 비해 큰 폭의 단발 스파이크) — point-mass 벤치마크 자체의 한계(스레드 스케줄링/CPU 경합)인지 실제로 속도가 커지면 생기는 현상인지는 **추가 조사가 필요**하며, 이 세션에서 원인까지 규명하지는 못했다는 점을 투명하게 남겨둔다.
 - **센서 노이즈는 한계가 분명히 존재한다** — 기본값(0.5mm)과 그 절반(0mm)까지는 완전히 깨끗하지만, 1mm부터 역행이 다시 나타나고(13회) 2mm·4mm에서는 급격히 악화된다(201회, 478회) — `OpenLoopCorrector`(상수속도 KF)가 걸러낼 수 있는 노이즈 수준에 한계가 있다는 뜻. 이는 "제안안이 모든 상황에서 완벽하다"가 아니라 "검증된 노이즈 범위 안에서 효과적이다"로 정직하게 제한을 명시해야 할 부분 — 실제 로봇의 센서 노이즈 사양을 확인해서 그 범위가 1mm 미만인지 먼저 확인하는 게 다음 단계로 필요하다.
 
-### 그래프 (`ai2ctrl_layer/make_plots.py`, `docs/ablation_results/*.png`)
+### 그래프 (`ai_layer/tools/make_plots.py`, `docs/ablation_results/*.png`)
 
 **① 입력 — AI chunk 도착 시각/추론 지연**
 ![입력 그래프](ablation_results/01_input_chunk_timing.png)
@@ -223,7 +223,7 @@ X(진행 방향)에서 baseline의 역행/정체가 그대로 보이고, 속도 
 
 ---
 
-## 조인트 동역학 검증 (`ai2ctrl_layer/joint_dynamics_bench.py`, MuJoCo 실제 SO-101 5관절)
+## 조인트 동역학 검증 (`ai_layer/tools/joint_dynamics_bench.py`, MuJoCo 실제 SO-101 5관절)
 
 **왜 추가했나**: 위 모든 결과는 point-mass(물리 없이 목표 위치로 즉시 "순간이동")로 얻은 것이다.
 "인터페이스 설계는 유효한데, 실제 로봇(관성·토크 한계가 있는 관절)에도 통할지는 point-mass만으론
@@ -319,7 +319,7 @@ reversal_events/max_backstep은 anchor_none·anchor_commit_only가 "0"으로 나
 다른 그림처럼 보이지만, 오른쪽 두 패널(ik_tracking_err_rms, torque_saturated_ticks)을 보면
 실제로는 둘 다 심각하게 나쁘다는 게 드러난다 — 위 "읽는 법"의 핵심 발견.
 
-### 시뮬레이션 화면 (`ai2ctrl_layer/render_joint_sim.py`, baseline vs proposed)
+### 시뮬레이션 화면 (`ai_layer/tools/render_joint_sim.py`, baseline vs proposed)
 
 그래프/숫자 말고 실제로 팔이 어떻게 움직이는지 눈으로 비교할 수 있게, 같은 seed(1)로 MuJoCo
 오프스크린 렌더로 영상(mp4)과 구간별 스냅샷(png)을 남겼다. 빨간 선은 REF 경로, 주황 점은
