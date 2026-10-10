@@ -1,9 +1,9 @@
 """OpenLoopCorrector — Problem.md 5번(청크 내부 열린 루프) 담당, "아이디어" 단계였던 걸 구현.
 
 Feedforward(AI chunk) + Feedback(이 모듈) 구조: chunk는 "큰 그림 계획"으로만 쓰고, 매 틱
-실측 위치가 들어올 때마다 그 오차를 반영해 위치/속도 추정을 보정한다. 여기서는 전체
-Kalman Filter 대신 그 특수case인 constant-velocity(등속) 모델 기반의 간단한 알파-베타
-필터로 구현한다 — 상태(위치, 속도) 6차원, 관측(위치) 3차원.
+실측 위치가 들어올 때마다 그 오차를 반영해 위치/속도 추정을 보정한다. constant-velocity(등속)
+운동 모델 기반의 표준 칼만 필터로 구현한다(공분산 P를 매 틱 전파/갱신) — 상태(위치, 속도)
+6차원, 관측(위치) 3차원. 설명은 docs/Experiment_Plan.md "핵심 기법 설명" 절 참고.
 """
 
 from __future__ import annotations
