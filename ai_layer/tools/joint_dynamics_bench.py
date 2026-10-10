@@ -192,11 +192,17 @@ def run_joint_benchmark(
     cfg: AblationConfig, *, duration: float = 6.0, tick_dt_ms: float = 2.0,
     corner_deg: float = 90.0, seg_len: float = 0.06, speed: float = 0.01, seed: int = 0,
     noise_std: float = 0.0005, ik_iters: int = 8, verbose: bool = True,
+    polyline: np.ndarray | None = None, q_seed_deg: np.ndarray | None = None,
 ) -> dict:
     """joint_dynamics_bench 버전 run_benchmark — interface_benchmark.run_benchmark와 같은 반환
-    형태(지표 dict + log)를 쓰므로 make_plots.py류 재사용이 쉽다."""
-    plant = SO101Plant()
-    polyline = bent_polyline(corner_deg, seg_len) + plant.home_pos  # 로봇이 닿는 범위에 경로 배치
+    형태(지표 dict + log)를 쓰므로 make_plots.py류 재사용이 쉽다.
+
+    polyline을 직접 넘기면(예: zigzag_polyline) corner_deg/seg_len은 무시되고, 여기서 plant의
+    home_pos만큼 평행이동해서 그대로 쓴다(로봇이 닿는 범위에 경로를 배치하는 절차는 동일)."""
+    plant = SO101Plant(q_seed_deg=q_seed_deg)
+    if polyline is None:
+        polyline = bent_polyline(corner_deg, seg_len)
+    polyline = polyline + plant.home_pos  # 로봇이 닿는 범위에 경로 배치
     world = PointMassWorld(polyline=polyline, cfg=cfg)
     world.current_pos = plant.home_pos.copy()
     world.corrector.reset(world.current_pos.copy())

@@ -17,10 +17,16 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
-from ai_layer.tools.interface_benchmark import AblationConfig, bent_polyline, run_benchmark
+from ai_layer.tools.interface_benchmark import AblationConfig, run_benchmark, zigzag_polyline
 
 BASELINE_CFG = AblationConfig(anchor_level="none", buffer_baseline=True, trigger_baseline=True, use_corrector=False)
 PROPOSED_CFG = AblationConfig(anchor_level="commit_refine", buffer_baseline=False, trigger_baseline=False, use_corrector=True)
+# 2026-10-10(기범 피드백 — "baseline도 꺾인 지점을 한번은 경험하게"): 코너 1개짜리 bent_polyline
+# 대신 코너 3개짜리 zigzag_polyline을 쓴다 — joint_dynamics_bench 쪽(render_joint_sim.py)과
+# 정확히 같은 경로(n_corners/corner_deg/seg_len)를 써서 "같은 궤적"으로 비교 가능하게 한다.
+N_CORNERS = 3
+CORNER_DEG = 90.0
+SEG_LEN = 0.05
 
 
 def _arr(log: list[dict], key: str) -> np.ndarray:
@@ -172,7 +178,7 @@ def plot_ablation_bars(sweep_csv: Path, out: Path) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--duration", type=float, default=6.0)
+    ap.add_argument("--duration", type=float, default=45.0)
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--out-dir", default="docs/ablation_results")
     ap.add_argument("--sweep-csv", default="docs/ablation_results/sweep.csv")
@@ -180,11 +186,11 @@ def main() -> None:
     out = Path(args.out_dir)
     out.mkdir(parents=True, exist_ok=True)
 
-    polyline = bent_polyline()
+    polyline = zigzag_polyline(n_corners=N_CORNERS, corner_deg=CORNER_DEG, seg_len=SEG_LEN)
     print("running baseline...")
-    baseline = run_benchmark(BASELINE_CFG, duration=args.duration, seed=args.seed, verbose=False)
+    baseline = run_benchmark(BASELINE_CFG, duration=args.duration, seed=args.seed, verbose=False, polyline=polyline)
     print("running proposed...")
-    proposed = run_benchmark(PROPOSED_CFG, duration=args.duration, seed=args.seed, verbose=False)
+    proposed = run_benchmark(PROPOSED_CFG, duration=args.duration, seed=args.seed, verbose=False, polyline=polyline)
 
     plot_input(baseline, proposed, out)
     plot_output(baseline, proposed, out)

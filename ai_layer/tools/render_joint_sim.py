@@ -26,7 +26,7 @@ joint_dynamics_bench.py/run_joint_benchmark()를 그대로 쓰지 않고 따로 
 틱 스레드).
 
 실행:
-    PYTHONPATH=. python ai_layer/tools/render_joint_sim.py --duration 26 --seed 1
+    PYTHONPATH=. python ai_layer/tools/render_joint_sim.py --duration 60 --seed 1
 """
 
 from __future__ import annotations
@@ -52,7 +52,7 @@ from ai_layer.tools.interface_benchmark import (
     PointMassChunkSink,
     PointMassSnapshotSource,
     PointMassWorld,
-    bent_polyline,
+    zigzag_polyline,
 )
 from ai_layer.tools.joint_dynamics_bench import SO101Plant
 
@@ -99,16 +99,26 @@ def _draw_markers(scene: mujoco.MjvScene, polyline: np.ndarray, cmd_pos: np.ndar
 
 
 def record_joint_sim(
-    cfg: AblationConfig, name: str, *, duration: float = 26.0, tick_dt_ms: float = 2.0,
-    corner_deg: float = 90.0, seg_len: float = 0.12, speed: float = 0.01, seed: int = 1,
+    cfg: AblationConfig, name: str, *, duration: float = 90.0, tick_dt_ms: float = 2.0,
+    n_corners: int = 7, corner_deg: float = 45.0, seg_len: float = 0.05, speed: float = 0.01, seed: int = 1,
     noise_std: float = 0.0005, ik_iters: int = 8, fps: int = 24, out_dir: Path = OUT_DIR,
+    polyline: np.ndarray | None = None,
 ) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     plant = SO101Plant(q_seed_deg=FLOOR_SEED_DEG)
-    renderer = mujoco.Renderer(plant.model, height=CAMERA_HW[0], width=CAMERA_HW[1], max_geom=4000)
+    renderer = mujoco.Renderer(plant.model, height=CAMERA_HW[0], width=CAMERA_HW[1], max_geom=6000)
     cam = _make_camera(plant.home_pos)
 
-    polyline = bent_polyline(corner_deg, seg_len) + plant.home_pos
+    if polyline is None:
+        # 2026-10-10(3차, 기범 피드백 — "꺾인 지점을 더 만들어서 baseline도 경험하게", 이어서
+        # "궤적 길이를 2배로"): n_corners=3/corner_deg=90°(총 0.2m)로는 baseline이 코너를 겪게는
+        # 됐지만, 길이를 2배(~0.4m)로 늘리려 하면 코너를 더 완만하게(corner_deg를 낮춰 꺾임각을
+        # 키움) 잡아야 이 팔(FLOOR_SEED_DEG)의 도달범위 안에 들어온다 — 실측 확인: n_corners=7,
+        # corner_deg=90 그대로 쓰면 x축으로만 계속 전진해 도달범위를 벗어나 IK가 깨짐(수cm 오차).
+        # corner_deg=45°(꺾임각 더 큼 → 세그먼트가 y축 쪽으로 더 많이 쏠림 → x 전진이 느려짐)로
+        # 바꾸니 n_corners=7(8세그먼트×0.05m=0.4m, 기존 0.2m의 정확히 2배)이 깨끗하게 들어간다.
+        polyline = zigzag_polyline(n_corners=n_corners, corner_deg=corner_deg, seg_len=seg_len)
+    polyline = polyline + plant.home_pos
     world = PointMassWorld(polyline=polyline, cfg=cfg)
     world.current_pos = plant.home_pos.copy()
     world.corrector.reset(world.current_pos.copy())
@@ -224,8 +234,10 @@ def record_joint_sim(
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--duration", type=float, default=26.0)
-    ap.add_argument("--seg-len", type=float, default=0.12)
+    ap.add_argument("--duration", type=float, default=90.0)
+    ap.add_argument("--n-corners", type=int, default=7)
+    ap.add_argument("--corner-deg", type=float, default=45.0)
+    ap.add_argument("--seg-len", type=float, default=0.05)
     ap.add_argument("--speed", type=float, default=0.01)
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--fps", type=int, default=24)
@@ -234,11 +246,13 @@ def main() -> None:
     out_dir = Path(args.out_dir)
 
     print("recording baseline...")
-    record_joint_sim(BASELINE_CFG, "baseline", duration=args.duration, seg_len=args.seg_len,
-                      speed=args.speed, seed=args.seed, fps=args.fps, out_dir=out_dir)
+    record_joint_sim(BASELINE_CFG, "baseline", duration=args.duration, n_corners=args.n_corners,
+                      corner_deg=args.corner_deg, seg_len=args.seg_len, speed=args.speed, seed=args.seed,
+                      fps=args.fps, out_dir=out_dir)
     print("recording proposed...")
-    record_joint_sim(PROPOSED_CFG, "proposed", duration=args.duration, seg_len=args.seg_len,
-                      speed=args.speed, seed=args.seed, fps=args.fps, out_dir=out_dir)
+    record_joint_sim(PROPOSED_CFG, "proposed", duration=args.duration, n_corners=args.n_corners,
+                      corner_deg=args.corner_deg, seg_len=args.seg_len, speed=args.speed, seed=args.seed,
+                      fps=args.fps, out_dir=out_dir)
 
     import os
     import sys

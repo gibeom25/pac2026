@@ -64,6 +64,32 @@ def bent_polyline(corner_deg: float = 90.0, seg_len: float = 0.3, n_points: int 
     return np.concatenate([seg1, seg2], axis=0).astype(np.float64)
 
 
+def zigzag_polyline(n_corners: int = 3, corner_deg: float = 90.0, seg_len: float = 0.08, n_points: int = 400) -> np.ndarray:
+    """2026-10-10(기범 피드백 — "baseline도 꺾인 지점을 한번은 경험하게"): bent_polyline은
+    코너가 1개뿐이라, baseline처럼 느린 쪽은 전체 재생시간 안에 코너까지 아예 못 가는 경우가
+    생긴다(실측 확인: 32초 동안 0.6m 경로의 1/4밖에 진행 못 함). 세그먼트를 짧게 쪼개고 코너를
+    여러 개로 나눠서, 느린 쪽도 최소 1~2개는 코너를 실제로 통과하게 만든다.
+
+    +x축 기준으로 세그먼트가 번갈아 +delta/-delta 방향을 향하는 지그재그(톱니 모양) — 누적
+    방향이 아니라 "매번 +x축 쪽으로 돌아오는" 대칭 구조라 로봇 작업공간 밖으로 계속 드리프트
+    하지 않는다(bent_polyline처럼 각 코너 자체의 꺾임각은 corner_deg로 동일하게 유지)."""
+    delta = np.deg2rad(180.0 - corner_deg) / 2.0
+    pts = [np.array([0.0, 0.0, 0.0])]
+    for i in range(n_corners + 1):
+        heading = delta if i % 2 == 0 else -delta
+        direction = np.array([np.cos(heading), np.sin(heading), 0.0])
+        pts.append(pts[-1] + seg_len * direction)
+    pts = np.array(pts)
+
+    seg_vec = np.diff(pts, axis=0)
+    seg_lens = np.linalg.norm(seg_vec, axis=1)
+    cum = np.concatenate([[0.0], np.cumsum(seg_lens)])
+    sample_s = np.linspace(0.0, cum[-1], n_points)
+    idx = np.clip(np.searchsorted(cum, sample_s, side="right") - 1, 0, len(seg_vec) - 1)
+    t = (sample_s - cum[idx]) / np.maximum(seg_lens[idx], 1e-9)
+    return (pts[idx] + t[:, None] * seg_vec[idx]).astype(np.float64)
+
+
 def _progress_at(polyline: np.ndarray, pos: np.ndarray) -> float:
     pt = torch.from_numpy(pos).float().unsqueeze(0)
     poly = torch.from_numpy(polyline).float().unsqueeze(0)
@@ -284,7 +310,7 @@ def control_tick_loop(
 def run_benchmark(
     cfg: AblationConfig, *, duration: float = 15.0, tick_dt_ms: float = 2.0,
     corner_deg: float = 90.0, seg_len: float = 0.3, speed: float = 0.02, seed: int = 0,
-    noise_std: float = 0.0005, verbose: bool = True,
+    noise_std: float = 0.0005, verbose: bool = True, polyline: np.ndarray | None = None,
 ) -> dict:
     """한 설정으로 한 번 돌려서 지표 dict + 원본 log를 반환 — CLI(main)와 sweep 스크립트가 공유.
 
@@ -292,8 +318,12 @@ def run_benchmark(
     있음) — 여러 번 연달아 호출해도 프로세스 차원에서는 문제없다(스레드가 쌓였다가 실제 프로세스
     종료 시 한꺼번에 정리됨). 다만 PyTorch + daemon 스레드 조합이 **인터프리터 종료** 시 가끔
     core dump를 내는 걸 실측했으므로(그 자체는 결과에 영향 없음), 전체 스윕이 다 끝난 뒤
-    호출부가 마지막에 한 번만 os._exit(0)로 깔끔히 종료할 것(main()이 그렇게 함)."""
-    polyline = bent_polyline(corner_deg, seg_len)
+    호출부가 마지막에 한 번만 os._exit(0)로 깔끔히 종료할 것(main()이 그렇게 함).
+
+    polyline을 직접 넘기면(예: zigzag_polyline) corner_deg/seg_len은 무시되고 그 경로를 그대로
+    쓴다 — 코너가 여러 개인 경로로 baseline/proposed를 비교하고 싶을 때 사용."""
+    if polyline is None:
+        polyline = bent_polyline(corner_deg, seg_len)
     world = PointMassWorld(polyline=polyline, cfg=cfg)
 
     predictor = MockGroundTruthPredictor(polyline, speed=speed, seed=seed)
